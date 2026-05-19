@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zotero Collection Manager"
+  short_description: "批量导入 Zotero collection"
+  default_prompt: "使用 $zotero-collection-manager 批量处理 Zotero collection，跳过已完成条目并刷新 Vault 索引。"

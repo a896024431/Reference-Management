@@ -1,0 +1,51 @@
+# Keep this repository as a portable Obsidian/Codex research vault.
+# Default deny: explicitly allow only markdown notes, indexes, skills,
+# templates, scripts, and repository guidance.
+*
+!*/
+
+!.gitignore
+!.gitattributes
+!AGENTS.md
+!*.md
+
+!skills/
+!skills/**
+!templates/
+!templates/**
+!scripts/
+!scripts/**
+
+!note/
+!note/**/
+!note/**/*.md
+
+# Local machine state and private data.
+.local/
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.crt
+
+# Zotero databases, attachments, and full-text caches must stay local.
+*.sqlite
+*.sqlite-*
+*.db
+*.pdf
+*.epub
+*.zotero-ft-cache
+storage/
+
+# Obsidian UI/cache state is intentionally not synced.
+.obsidian/
+.trash/
+
+# Temporary outputs.
+*.tmp
+*.temp
+*.bak
+*.log
+__pycache__/
+*.py[cod]
