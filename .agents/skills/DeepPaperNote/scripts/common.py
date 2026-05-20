@@ -152,6 +152,14 @@ def slugify_filename(text: str) -> str:
     return text or "paper_note"
 
 
+def paper_folder_name(title: str) -> str:
+    """Return the paper-title folder name, preserving spaces when possible."""
+    name = normalize_whitespace(title)
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name)
+    name = name.rstrip(" .")
+    return name or "paper_note"
+
+
 def shell_config_value(name: str) -> str:
     pattern = re.compile(rf"^\s*(?:export\s+)?{re.escape(name)}=(.*)$")
     for path in SHELL_CONFIG_FILES:
@@ -949,7 +957,7 @@ def domain_name_score(domain_name: str, label: str, title: str, abstract: str) -
 def resolve_domain_subdir(config: dict[str, Any], *, title: str, abstract: str = "", subdir: str = "") -> str:
     if subdir.strip():
         return subdir.strip()
-    return slugify_filename(title)
+    return paper_folder_name(title)
 
 
 def resolve_obsidian_note_path(
@@ -968,7 +976,7 @@ def resolve_obsidian_note_path(
             relative_dir = subdir_path
         else:
             relative_dir = relative_dir / subdir_path
-    note_slug = slugify_filename(title)
+    note_slug = paper_folder_name(title)
     target_name = filename or "笔记.md"
     if subdir:
         return root_path / relative_dir / target_name

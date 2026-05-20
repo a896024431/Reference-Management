@@ -186,7 +186,8 @@ For a normal single-paper note request, the pipeline below is a required executi
     - if an Obsidian vault is configured, vault mode is required
     - do not reinterpret "vault configured but not currently writable" as a workspace-fallback case
     Resolve a paper folder before writing:
-    - use `Research/<paper_slug>/笔记.md` by default
+    - use `Research/<paper_title>/笔记.md` by default
+    - preserve the canonical paper title exactly, except for removing filesystem-invalid characters
     - do not add domain/category directory layers unless the user explicitly asks
     - do not save directly into the bare `Research` root
     Complete the figure decision before this step:

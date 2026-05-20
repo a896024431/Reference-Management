@@ -117,7 +117,8 @@ Local-library-first rule (applies only when the Zotero check above succeeds):
 - After such a refusal, DeepPaperNote may save to the workspace only if it asks again and receives explicit user consent for that fallback.
 - By default, each paper should be written into its own same-name folder, with the note and images stored together.
 - The note should never default to the bare `Research` root. Choose a paper folder first.
-- Do not add domain/category directory layers by default; use `Research/<paper_slug>/笔记.md` unless the user explicitly asks for another layout.
+- Do not add domain/category directory layers by default; use `Research/<paper_title>/笔记.md` unless the user explicitly asks for another layout.
+- The `<paper_title>` folder should preserve the canonical paper title exactly, except for removing characters that are invalid in local filesystem paths.
 - A normal note-generation request should complete in one pass: note text, figure placeholder decisions, image materialization when confident, and final save.
 - Do not stop after a text-only draft just to ask whether the user wants figures inserted. Finish the figure replacement decision inside the same task unless the user explicitly asked for text only.
 - Always create the paper-local `images/` folder during final save, even if no high-confidence images were materialized.

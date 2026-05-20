@@ -9,7 +9,7 @@
    - `.agents/skills/DeepPaperNote/SKILL.md`
 3. Codex 处理论文笔记任务前，必须先读取上面的 `SKILL.md`，并按其中要求读取相关 `references/` 文件。
 4. 输出目录采用当前 vault 的扁平论文结构：
-   - `Research/<论文>/`
+   - `Research/<论文标题>/`
 5. 每篇论文使用独立文件夹，文件夹内至少包含：
    - `笔记.md`
    - `images/` 目录，即使暂时没有可确认图片也要创建

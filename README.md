@@ -14,7 +14,7 @@
 │   └── skills/
 │       └── DeepPaperNote/
 └── Research/
-    └── <论文>/
+    └── <论文标题>/
         ├── 笔记.md
         └── images/
 ```
@@ -40,7 +40,7 @@
 Codex 会读取 `.agents/skills/DeepPaperNote/SKILL.md`，按其流程解析论文、收集元数据、提取证据、规划图表位置、生成笔记、运行 lint，并保存到：
 
 ```text
-Research/<论文>/
+Research/<论文标题>/
 ```
 
 ## Zotero 状态

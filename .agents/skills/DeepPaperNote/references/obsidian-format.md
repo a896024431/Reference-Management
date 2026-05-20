@@ -14,8 +14,8 @@
 Default file name:
 - `笔记.md`
 - default note layout is folder-per-paper:
-  - `<paper_slug>/笔记.md`
-  - `<paper_slug>/images/...`
+  - `<paper_title>/笔记.md`
+  - `<paper_title>/images/...`
 - do not add domain/category directory layers by default
 - do not save new papers directly into the bare `Research` root
 - always create the paper-local `images/` directory during final save, even if no real image is inserted
@@ -107,7 +107,7 @@ Do not use it in the final user-facing note unless you are debugging the pipelin
 If a real image has been selected and materialized into the vault, prefer an Obsidian embed:
 
 ```md
-![[Research/paper_slug/images/page_003_img_01.png]]
+![[Research/paper_title/images/page_003_img_01.png]]
 *论文原图编号：Fig. 2。数据生成流程图。这里插入是因为它最能帮助理解方法主线。*
 ```
 
@@ -142,11 +142,11 @@ Entries in `## 引用` should link to existing notes in the vault where possible
 Follow this priority order for each reference:
 
 1. **Vault lookup first**: check whether the cited paper already has a note in the vault.
-   - Match by note basename (the `<paper_slug>` part of the folder name).
+   - Match by paper-title folder name under `Research/`.
    - Match by the `aliases` field in the note's YAML frontmatter.
 2. **If a match is found**: write a wikilink that separates the target from the display text:
    ```
-   - [[paper_slug_or_alias|Human Readable Title]]
+   - [[Research/Paper Title/笔记|Human Readable Title]]
    ```
 3. **If no match is found**: do not invent a wikilink target. Write the reference as plain text instead:
    ```
@@ -154,7 +154,7 @@ Follow this priority order for each reference:
    ```
 
 Rules:
-- Never use a raw English paper title as the wikilink target; it will not match vault filenames.
-- To derive a likely slug from a title: lowercase the title and replace spaces and special characters with underscores — but only use the result as the target if you have confirmed the file exists.
+- Use the confirmed paper-title folder path when linking to an existing note.
+- Do not derive an underscore slug from a title for this vault layout.
 - List only papers cited or directly relevant to this note.
 - Do not add extra DOIs or author metadata when using wikilink format; the display text is enough.
