@@ -1,4 +1,0 @@
-interface:
-  display_name: "Research Vault 检索"
-  short_description: "只基于 Vault 笔记回答"
-  default_prompt: "使用 $research-vault-literature-retrieval 先读索引再检索 note，并只基于 Vault 证据回答。"

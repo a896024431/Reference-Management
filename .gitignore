@@ -1,24 +1,48 @@
-# Keep this repository as a portable Obsidian/Codex research vault.
-# Default deny: explicitly allow only markdown notes, indexes, skills,
-# templates, scripts, and repository guidance.
+# Keep this repository as a portable Codex + Obsidian research vault.
+# Default deny: explicitly allow only guidance, the repo-local
+# DeepPaperNote skill, Markdown notes, and paper-note image assets.
 *
 !*/
 
 !.gitignore
 !.gitattributes
 !AGENTS.md
+!README.md
 !*.md
 
-!skills/
-!skills/**
-!templates/
-!templates/**
-!scripts/
-!scripts/**
+# Repo-local DeepPaperNote skill.
+!.agents/
+!.agents/skills/
+!.agents/skills/DeepPaperNote/
+!.agents/skills/DeepPaperNote/**
 
-!note/
-!note/**/
-!note/**/*.md
+# Keep optional website/dev output out of the vault if it reappears.
+.agents/skills/DeepPaperNote/site/node_modules/
+.agents/skills/DeepPaperNote/site/.astro/
+.agents/skills/DeepPaperNote/.agent-work/
+.agents/skills/DeepPaperNote/**/__pycache__/
+.agents/skills/DeepPaperNote/**/*.py[cod]
+.agents/skills/DeepPaperNote/.pytest_cache/
+.agents/skills/DeepPaperNote/.mypy_cache/
+.agents/skills/DeepPaperNote/.ruff_cache/
+.agents/skills/DeepPaperNote/.venv/
+.agents/skills/DeepPaperNote/venv/
+.agents/skills/DeepPaperNote/dist/
+.agents/skills/DeepPaperNote/build/
+*.egg-info/
+
+# DeepPaperNote Obsidian outputs.
+!Research/
+!Research/Papers/
+!Research/Papers/**/
+!Research/Papers/**/*.md
+!Research/Papers/**/images/
+!Research/Papers/**/images/*.png
+!Research/Papers/**/images/*.jpg
+!Research/Papers/**/images/*.jpeg
+!Research/Papers/**/images/*.webp
+!Research/Papers/**/images/*.gif
+!Research/Papers/**/images/*.svg
 
 # Local machine state and private data.
 .local/
@@ -29,7 +53,7 @@
 *.pfx
 *.crt
 
-# Zotero databases, attachments, and full-text caches must stay local.
+# Zotero databases, attachments, and full-text caches stay local.
 *.sqlite
 *.sqlite-*
 *.db
@@ -42,10 +66,16 @@ storage/
 .obsidian/
 .trash/
 
-# Temporary outputs.
+# Temporary outputs and caches.
 *.tmp
 *.temp
 *.bak
 *.log
 __pycache__/
 *.py[cod]
+node_modules/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

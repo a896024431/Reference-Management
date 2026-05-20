@@ -1,4 +1,0 @@
-interface:
-  display_name: "Zotero Data Fetcher"
-  short_description: "提取 Zotero 原始语料"
-  default_prompt: "使用 $zotero-data-fetcher 从 Zotero Item Key 提取 metadata、批注和全文缓存。"

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Zotero Analytical Writer"
-  short_description: "生成中文论文精读笔记"
-  default_prompt: "使用 $zotero-analytical-writer 根据 Zotero 原始语料生成中文 Obsidian 精读笔记。"

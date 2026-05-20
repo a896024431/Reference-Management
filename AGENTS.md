@@ -1,50 +1,59 @@
-# Codex Research Vault Agent Guide
+# Codex + Obsidian + DeepPaperNote Vault Guide
 
-本仓库是一个可通过 GitHub 私有仓库同步的 Codex + Obsidian + Zotero 论文库。默认把仓库根目录视为 Obsidian Vault 根目录，`note/` 存放论文精读笔记，根目录四个索引页用于检索。
+本仓库的根目录就是 Obsidian Vault 根目录。当前目标很窄：用 Codex 调用仓库内的 DeepPaperNote skill，为单篇论文生成高质量 Obsidian Markdown 深读笔记。
 
 ## 默认工作方式
 
-1. 优先把用户关于文献、概念、方法、变量、研究区和论文比较的问题当作 Vault 检索任务。
-2. 回答前先读取根目录索引页，顺序固定为：
-   - `文献索引.md`
-   - `研究主题索引.md`
-   - `研究方法索引.md`
-   - `字段补全检查.md`
-3. 再用 `rg -n --glob '*.md'` 检索 `note/`，同时搜索中文关键词、英文关键词、方法名、变量名、地区名和论文标题别名。
-4. 回答必须基于 Vault 中真实存在的笔记内容。依据不足时写明：`Vault 中未找到足够依据`。
-5. 默认只读。只有用户明确要求导入、刷新索引、编辑笔记或同步时，才修改文件。
+1. 用户给出论文标题、DOI、arXiv ID、URL 或本地 PDF，并要求生成论文笔记时，优先按 DeepPaperNote 工作流处理。
+2. DeepPaperNote 是 repo-local skill，路径固定为：
+   - `.agents/skills/DeepPaperNote/SKILL.md`
+3. Codex 处理论文笔记任务前，必须先读取上面的 `SKILL.md`，并按其中要求读取相关 `references/` 文件。
+4. 输出目录采用 DeepPaperNote 原生结构：
+   - `Research/Papers/<领域>/<论文>/`
+5. 每篇论文使用独立文件夹，文件夹内至少包含：
+   - 论文 Markdown 笔记
+   - `images/` 目录，即使暂时没有可确认图片也要创建
 
-## Zotero 导入工作流
+## DeepPaperNote 执行边界
 
-按顺序使用本仓库 skills：
+1. 目前暂不配置 Zotero 联动，也不安装 Zotero MCP。
+2. 若当前 Codex 会话没有 Zotero 工具，记录为 `Zotero not available`，然后继续使用 PDF、DOI、arXiv、URL 或开放元数据来源。
+3. 不要恢复旧 Zotero 导入脚本、旧静态索引脚本或旧 `note/` 目录工作流。
+4. 如果 PDF 或全文证据不足，不要把结果说成完整深读笔记；应明确标记为证据不足或降级草稿。
+5. 写入 Obsidian 前按 DeepPaperNote 要求运行 lint 和最终可读性检查。
+6. 运行 DeepPaperNote 脚本时，优先使用已验证的系统 Python：
+   - `C:\Users\chen\AppData\Local\Programs\Python\Python311\python.exe`
+   - 该解释器为 Python 3.11.5，已安装 `PyMuPDF/fitz`
+   - 当前 shell 默认的 MSYS2 Python 3.12 不含 `fitz`，不适合作为 PDF 处理默认解释器
 
-1. `$zotero-collection-manager`：读取 Zotero collection，检查 `note/<collection>/_ProcessLog_进度记录.md`，只处理未完成条目。
-2. `$zotero-data-fetcher`：从本机 Zotero 数据目录提取单篇论文 metadata、批注、附件和全文缓存，保持原始语言，不翻译不总结。
-3. `$zotero-analytical-writer`：套用 `templates/论文精读模板.md` 生成中文 Obsidian 精读笔记，并在新增笔记后刷新四个索引页。
+## Git 同步边界
 
-常用脚本：
+允许同步：
 
-```powershell
-.\scripts\setup.ps1
-.\scripts\verify.ps1
-python .\scripts\zotero\extract_item_json.py --item-key ABCD1234 --zotero-data-dir "D:\Zotero"
-python .\scripts\zotero\process_collection.py --collection "分类名" --zotero-data-dir "D:\Zotero"
-python .\scripts\vault\refresh_indexes.py --vault-root .
-```
+- `AGENTS.md`
+- `README.md`
+- `.gitignore`
+- `.gitattributes`
+- `.agents/skills/DeepPaperNote/`
+- `Research/Papers/**/*.md`
+- `Research/Papers/**/images/` 下的常见图片文件
 
-## GitHub 同步边界
+禁止同步：
 
-只同步 Markdown 笔记、索引、skills、模板、脚本、`AGENTS.md`、`.gitignore`、`.gitattributes`。不要提交 Zotero 数据库、PDF、附件、全文缓存、本机路径配置、密钥、Obsidian 工作区状态和 `.local/`。
+- Zotero 数据库、storage、PDF、EPUB 和全文缓存
+- `.local/`
+- `.env`、密钥、证书和本机配置
+- Obsidian workspace 状态，如 `.obsidian/`
+- 临时输出、Python/Node 缓存和构建产物
 
-两台电脑同步时固定流程：
+## 常用同步流程
 
 ```powershell
 git pull
-python .\scripts\vault\refresh_indexes.py --vault-root .
 git status --short
-git add AGENTS.md .gitignore .gitattributes *.md note skills templates scripts
-git commit -m "Update research vault"
+git add AGENTS.md README.md .gitignore .gitattributes .agents Research
+git commit -m "Update DeepPaperNote vault"
 git push
 ```
 
-默认不要在两台电脑上同时批量导入同一个 Zotero collection。若出现冲突，优先保留较新的 Markdown 笔记内容，再重新运行索引刷新脚本。
+同步前先检查 `git status --short --ignored`，确认没有 PDF、密钥、本机配置或临时构建目录进入 Git。
