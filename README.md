@@ -14,14 +14,12 @@
 │   └── skills/
 │       └── DeepPaperNote/
 └── Research/
-    └── Papers/
-        └── <领域>/
-            └── <论文>/
-                ├── <论文>.md
-                └── images/
+    └── <论文>/
+        ├── 笔记.md
+        └── images/
 ```
 
-`Research/Papers/` 初始可以不存在。第一次生成论文笔记时，DeepPaperNote 会按论文领域和标题创建对应目录。
+`Research/` 初始可以不存在。第一次生成论文笔记时，DeepPaperNote 会按论文标题创建独立目录。
 
 ## 如何使用
 
@@ -42,7 +40,7 @@
 Codex 会读取 `.agents/skills/DeepPaperNote/SKILL.md`，按其流程解析论文、收集元数据、提取证据、规划图表位置、生成笔记、运行 lint，并保存到：
 
 ```text
-Research/Papers/<领域>/<论文>/
+Research/<论文>/
 ```
 
 ## Zotero 状态

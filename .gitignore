@@ -33,16 +33,15 @@
 
 # DeepPaperNote Obsidian outputs.
 !Research/
-!Research/Papers/
-!Research/Papers/**/
-!Research/Papers/**/*.md
-!Research/Papers/**/images/
-!Research/Papers/**/images/*.png
-!Research/Papers/**/images/*.jpg
-!Research/Papers/**/images/*.jpeg
-!Research/Papers/**/images/*.webp
-!Research/Papers/**/images/*.gif
-!Research/Papers/**/images/*.svg
+!Research/**/
+!Research/**/*.md
+!Research/**/images/
+!Research/**/images/*.png
+!Research/**/images/*.jpg
+!Research/**/images/*.jpeg
+!Research/**/images/*.webp
+!Research/**/images/*.gif
+!Research/**/images/*.svg
 
 # Local machine state and private data.
 .local/

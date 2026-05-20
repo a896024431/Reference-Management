@@ -834,7 +834,7 @@ def runtime_config() -> dict[str, Any]:
             "DEEPPAPERNOTE_OBSIDIAN_VAULT",
             "READ_ARXIV_OBSIDIAN_VAULT",
         ),
-        "papers_dir": env_config_value("DEEPPAPERNOTE_PAPERS_DIR", default="Research/Papers"),
+        "papers_dir": env_config_value("DEEPPAPERNOTE_PAPERS_DIR", default="Research"),
         "output_dir": env_config_value("DEEPPAPERNOTE_OUTPUT_DIR", default="tmp/DeepPaperNote"),
         "workspace_output_dir": env_config_value(
             "DEEPPAPERNOTE_WORKSPACE_OUTPUT_DIR",
@@ -904,13 +904,13 @@ def infer_domain_label(title: str, abstract: str = "") -> str:
 def is_probable_paper_folder(path: Path) -> bool:
     if not path.is_dir():
         return False
-    marker = path / f"{path.name}.md"
+    marker = path / "笔记.md"
     return marker.exists()
 
 
 def existing_domain_dirs(config: dict[str, Any]) -> list[str]:
     output_mode, root_path = resolve_note_output_mode(config)
-    papers_dir = str(config.get("papers_dir", "Research/Papers")).strip() or "Research/Papers"
+    papers_dir = str(config.get("papers_dir", "Research")).strip() or "Research"
     base_dir = root_path / Path(papers_dir) if output_mode == "obsidian" else root_path
     if not base_dir.exists() or not base_dir.is_dir():
         return []
@@ -949,19 +949,7 @@ def domain_name_score(domain_name: str, label: str, title: str, abstract: str) -
 def resolve_domain_subdir(config: dict[str, Any], *, title: str, abstract: str = "", subdir: str = "") -> str:
     if subdir.strip():
         return subdir.strip()
-    label = infer_domain_label(title, abstract)
-    existing = existing_domain_dirs(config)
-    if existing:
-        best_name = ""
-        best_score = -1
-        for domain_name in existing:
-            score = domain_name_score(domain_name, label, title, abstract)
-            if score > best_score:
-                best_name = domain_name
-                best_score = score
-        if best_name and best_score > 0:
-            return best_name
-    return label
+    return slugify_filename(title)
 
 
 def resolve_obsidian_note_path(
@@ -972,7 +960,7 @@ def resolve_obsidian_note_path(
     filename: str = "",
 ) -> Path:
     output_mode, root_path = resolve_note_output_mode(config)
-    papers_dir = str(config.get("papers_dir", "Research/Papers")).strip() or "Research/Papers"
+    papers_dir = str(config.get("papers_dir", "Research")).strip() or "Research"
     relative_dir = Path(papers_dir) if output_mode == "obsidian" else Path()
     if subdir:
         subdir_path = Path(subdir)
@@ -981,10 +969,10 @@ def resolve_obsidian_note_path(
         else:
             relative_dir = relative_dir / subdir_path
     note_slug = slugify_filename(title)
-    target_name = filename or f"{note_slug}.md"
-    folder_name = Path(target_name).stem or note_slug
-    if relative_dir.name == folder_name:
+    target_name = filename or "笔记.md"
+    if subdir:
         return root_path / relative_dir / target_name
+    folder_name = note_slug
     return root_path / relative_dir / folder_name / target_name
 
 

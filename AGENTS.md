@@ -8,10 +8,10 @@
 2. DeepPaperNote 是 repo-local skill，路径固定为：
    - `.agents/skills/DeepPaperNote/SKILL.md`
 3. Codex 处理论文笔记任务前，必须先读取上面的 `SKILL.md`，并按其中要求读取相关 `references/` 文件。
-4. 输出目录采用 DeepPaperNote 原生结构：
-   - `Research/Papers/<领域>/<论文>/`
+4. 输出目录采用当前 vault 的扁平论文结构：
+   - `Research/<论文>/`
 5. 每篇论文使用独立文件夹，文件夹内至少包含：
-   - 论文 Markdown 笔记
+   - `笔记.md`
    - `images/` 目录，即使暂时没有可确认图片也要创建
 
 ## DeepPaperNote 执行边界
@@ -35,8 +35,8 @@
 - `.gitignore`
 - `.gitattributes`
 - `.agents/skills/DeepPaperNote/`
-- `Research/Papers/**/*.md`
-- `Research/Papers/**/images/` 下的常见图片文件
+- `Research/**/*.md`
+- `Research/**/images/` 下的常见图片文件
 
 禁止同步：
 

@@ -185,10 +185,10 @@ For a normal single-paper note request, the pipeline below is a required executi
     - if no Obsidian vault is configured, workspace mode is allowed
     - if an Obsidian vault is configured, vault mode is required
     - do not reinterpret "vault configured but not currently writable" as a workspace-fallback case
-    Resolve a domain folder before writing:
-    - prefer an existing first-level domain folder when there is a reasonable match
-    - create a new domain only when no existing domain fits well
-    - do not save directly into the bare papers root
+    Resolve a paper folder before writing:
+    - use `Research/<paper_slug>/笔记.md` by default
+    - do not add domain/category directory layers unless the user explicitly asks
+    - do not save directly into the bare `Research` root
     Complete the figure decision before this step:
     - replace high-confidence placeholders with real images
     - keep lower-confidence items as placeholders

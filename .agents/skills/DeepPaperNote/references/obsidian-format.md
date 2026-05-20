@@ -12,13 +12,12 @@
 ## File Naming
 
 Default file name:
-- sanitized English title with underscores
+- `笔记.md`
 - default note layout is folder-per-paper:
-  - `<领域>/<paper_slug>/<paper_slug>.md`
-  - `<领域>/<paper_slug>/images/...`
-- when deciding `<领域>`, prefer matching an existing first-level domain folder under the user's papers directory
-- only create a new domain folder when no existing domain is a reasonable fit
-- do not save new papers directly into the bare papers root
+  - `<paper_slug>/笔记.md`
+  - `<paper_slug>/images/...`
+- do not add domain/category directory layers by default
+- do not save new papers directly into the bare `Research` root
 - always create the paper-local `images/` directory during final save, even if no real image is inserted
 - the paper-local `images/` directory is part of the required note layout, not an optional optimization
 - if the target is an Obsidian vault but the current environment cannot create that directory yet, request permission escalation rather than omitting it
@@ -108,7 +107,7 @@ Do not use it in the final user-facing note unless you are debugging the pipelin
 If a real image has been selected and materialized into the vault, prefer an Obsidian embed:
 
 ```md
-![[Research/Papers/DeepPaperNote/paper_slug/images/page_003_img_01.png]]
+![[Research/paper_slug/images/page_003_img_01.png]]
 *论文原图编号：Fig. 2。数据生成流程图。这里插入是因为它最能帮助理解方法主线。*
 ```
 
