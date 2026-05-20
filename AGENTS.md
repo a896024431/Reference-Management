@@ -13,6 +13,9 @@
 5. 每篇论文使用独立文件夹，文件夹内至少包含：
    - `笔记.md`
    - `images/` 目录，即使暂时没有可确认图片也要创建
+6. 每次 DeepPaperNote 深度笔记完成、通过校验并保存到 Obsidian 后，最终回复必须询问用户是否需要同步到 GitHub。
+   - 只询问，不要在用户确认前自动执行 `git add`、`git commit` 或 `git push`。
+   - 用户确认同步后，再按下方 Git 同步边界和常用同步流程执行。
 
 ## DeepPaperNote 执行边界
 
