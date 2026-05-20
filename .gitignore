@@ -66,6 +66,7 @@ storage/
 .trash/
 
 # Temporary outputs and caches.
+tmp/
 *.tmp
 *.temp
 *.bak
