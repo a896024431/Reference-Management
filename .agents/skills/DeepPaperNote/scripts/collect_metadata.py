@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Collect and merge metadata from Zotero, DOI, Semantic Scholar, OpenAlex, arXiv, and publisher pages."""
+"""Collect metadata from Zotero, DOI, Semantic Scholar, OpenAlex, arXiv, and publishers."""
 
 from __future__ import annotations
 
-from common import base_parser, emit, enrich_metadata, maybe_load_json_record, paper_id_for_record, resolve_reference
+from common import (
+    base_parser,
+    emit,
+    enrich_metadata,
+    maybe_load_json_record,
+    paper_id_for_record,
+    resolve_reference,
+)
 
 
 def main() -> None:
@@ -20,7 +27,9 @@ def main() -> None:
         record = resolve_reference(args.input)
 
     metadata = enrich_metadata(record)
-    metadata["paper_id"] = args.paper_id or metadata.get("paper_id") or paper_id_for_record(metadata)
+    metadata["paper_id"] = (
+        args.paper_id or metadata.get("paper_id") or paper_id_for_record(metadata)
+    )
     metadata["status"] = "ok"
     metadata["script"] = "collect_metadata.py"
     emit(metadata, args.output)

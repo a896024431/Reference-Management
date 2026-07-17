@@ -1,6 +1,6 @@
 ---
 name: deeppapernote
-description: Generate a high-quality deep-reading note for a single paper and write it into an Obsidian-style vault. Use when the user gives a paper title, DOI, URL, arXiv ID, Zotero item, or local PDF and wants a polished Markdown note with strong structure, evidence-based analysis, and figure placeholders.
+description: Generate a high-quality deep-reading note for a single paper and write it into an Obsidian-style vault. Use when the user gives a paper title, DOI, URL, arXiv ID, Zotero item, or local PDF and wants a polished Markdown note with strong structure, evidence-based analysis, and reliable figures.
 ---
 
 # DeepPaperNote
@@ -34,12 +34,15 @@ The finished note must be more than a summary. It should reconstruct the paper's
 - why the paper is worth keeping
 
 Default writer persona:
-- a top-tier researcher or algorithm engineer
-- writing a replication-oriented lab note
-- not writing a popular-science explanation
-- assuming the reader can follow Python, PyTorch, training loops, and evaluation logic
+- a domain researcher writing a replication-oriented lab note
+- technically exact without turning the note into a literal translation
+- explicit about measured facts, model-dependent inference, and unresolved alternatives
+- adapted to the classified paper type rather than assuming an AI-method paper
 
-The note must adapt to the paper type. Use the same base structure, but shift emphasis for AI methods, benchmarks, clinical studies, and humanities or social-science papers.
+Supported schema-v2 types include `experimental_physics`, `theoretical_physics`,
+`materials_fabrication`, `ai_method`, `benchmark`, `clinical`, `survey`, and
+`generic`. When classification is uncertain, use `generic`; never default to
+`ai_method`.
 
 ## Workflow
 
@@ -96,7 +99,12 @@ Prefer the strongest available source in this order:
 4. arXiv or open-access PDF sources
 5. Semantic Scholar or OpenAlex for metadata backfill
 
-Before resolving the paper, actively check Zotero integration: attempt to call the Zotero MCP tool (for example, search for the paper title or list libraries). If the tool responds without error, Zotero is available and the local-library-first rule below applies. If the call fails or the tool is not present, record "Zotero not available" and proceed without it. Do not skip this check — the check itself determines whether local-library-first applies.
+At run start, perform a read-only capability check for an already configured
+Zotero provider. If it responds, use it as an optional local metadata and navigation
+source. If it is absent or unavailable, continue from the local PDF, DOI, arXiv
+identifier, or URL. Store provider availability only in the run manifest; never write
+`Zotero not available` or other transient integration status into a permanent note.
+Do not install a Zotero connector as part of a normal note run.
 
 Local-library-first rule (applies only when the Zotero check above succeeds):
 - search the local Zotero library first using the paper title, DOI, or arXiv id
@@ -119,7 +127,7 @@ Local-library-first rule (applies only when the Zotero check above succeeds):
 - The note should never default to the bare `Research` root. Choose a paper folder first.
 - Do not add domain/category directory layers by default; use `Research/<paper_title>/笔记.md` unless the user explicitly asks for another layout.
 - The `<paper_title>` folder should preserve the canonical paper title exactly, except for removing characters that are invalid in local filesystem paths.
-- A normal note-generation request should complete in one pass: note text, figure placeholder decisions, image materialization when confident, and final save.
+- A normal note-generation request should complete in one pass: note text, figure decisions, image materialization when confident, and final save.
 - Do not stop after a text-only draft just to ask whether the user wants figures inserted. Finish the figure replacement decision inside the same task unless the user explicitly asked for text only.
 - Always create the paper-local `images/` folder during final save, even if no high-confidence images were materialized.
 - The `images/` folder is part of the required save protocol, not an optional cleanup step. If permission is missing, request it; do not skip the directory.
@@ -132,12 +140,11 @@ Local-library-first rule (applies only when the Zotero check above succeeds):
 - The note should include a dedicated `创新点` section immediately after `原文摘要翻译` and before `一句话总结`.
 - The `创新点` section should not be empty praise. It should enumerate the paper's actual innovations and briefly explain why each one matters.
 - High-quality notes should usually contain multiple meaningful `###` subheadings in the technical sections when the paper is non-trivial.
-- The note must include figure/table placeholders for all major visuals rather than silently skipping them.
-- Every kept figure/table placeholder must appear directly under the most relevant analytical section named by its `建议位置`; do not collect unresolved placeholders in catch-all sections such as `剩余图表占位` or `Remaining figures`.
-- Every kept figure/table placeholder must use the standard `> [!figure]` callout format with `建议位置`, `放置原因`, and `当前状态`; do not use ordinary paragraph markers such as `[图表占位 | Fig. 1]`, `图表占位：Table 2`, or `Figure Placeholder | Fig. 3`.
-- Real images may replace some placeholders, but only if they clearly match the corresponding paper figure/table.
-- When inserting a real image, prefer the `obsidian_embed` returned by `scripts/materialize_figure_asset.py`.
-- Figure captions in the note must preserve the original paper numbering such as `Fig. 1` or `Table 2`.
+- Every high-value figure/table must receive an `inserted`, `placeholder`, or `omitted` decision in the run artifacts before publication. Candidate IDs, rejection reasons, crop details, hashes, and QA records are not reader-facing note content.
+- If a decision is `inserted`, place a direct Obsidian embed under the relevant analytical section and add a short natural caption explaining what it helps the reader understand. Preserve the original paper numbering such as `Fig. 1` or `Table 2`.
+- If no trustworthy image can be inserted, do not render a placeholder, callout, extraction status, or apology in the permanent note. Keep the decision and its reason in `figure_decisions.json`; the analysis prose must remain independently readable.
+- Permanent notes must never contain `[!figure]`, `建议位置`, `放置原因`, `当前状态`, hidden figure-target comments, candidate IDs, crop coordinates, hashes, visual-review language, or other pipeline metadata.
+- Real images may be used only when they clearly match the corresponding paper figure/table. When inserting one, prefer the `obsidian_embed` returned by `scripts/materialize_figure_asset.py`.
 - The note must pass a style gate: no mixed Chinese-English prose lines except stable proper nouns or citation metadata.
 - Style gate enforcement: when `lint_note.py` output contains `passes_style_gate: false`, fix the reported issues and re-run lint. Keep fixing and re-running until lint passes — multiple rounds are normal and expected. Do not decide that any failure is an acceptable exception — proper nouns, math formulas, and citation metadata are not automatic exemptions. Only escalate to the user if the same failures appear unchanged across multiple rounds with no reduction, indicating the model is unable to make further progress independently.
 - If PDF or evidence quality is insufficient for a real deep note, fail closed or clearly label the output as degraded.
@@ -160,7 +167,7 @@ Model-first rule:
 Use [references/note-quality.md](references/note-quality.md) for quality checks.
 Use [references/paper-types.md](references/paper-types.md) for domain adaptation.
 Use [references/obsidian-format.md](references/obsidian-format.md) for Markdown and vault conventions.
-Use [references/figure-placement.md](references/figure-placement.md) for figure placeholder rules.
+Use [references/figure-placement.md](references/figure-placement.md) for figure-decision and reader-facing placement rules.
 Use [references/evidence-first.md](references/evidence-first.md) when deciding how to turn bundle evidence into an actual note plan.
 Use [references/deep-analysis.md](references/deep-analysis.md) when the user expects a note that feels like a real long-term research note.
 Use [references/metadata-sources.md](references/metadata-sources.md) when metadata is incomplete.
@@ -217,4 +224,25 @@ Current status:
 
 - If the paper identity is ambiguous, confirm before writing.
 - If the PDF is unavailable and full-text evidence is too thin, do not present a note as if it were a full deep read.
-- Placeholder-first figure planning is required; image extraction is optional and must never reduce textual coverage.
+- Decision-first figure planning is required; unresolved decisions stay in run artifacts and must never reduce textual coverage.
+
+## Schema v2 publication contract
+
+For this Vault, read [references/v2-workflow.md](references/v2-workflow.md) and
+[references/vault-v2.md](references/vault-v2.md) before acting. They are authoritative
+where legacy MVP guidance differs.
+
+Use this final chain:
+
+1. `scripts/run_pipeline_final_v2.py`
+2. model-authored single-file double-layer note in the run staging directory
+3. `scripts/lint_note_final_v2.py`
+4. `scripts/record_note_review_v2.py` for independent quality and readability reviews
+5. `scripts/build_figure_contact_sheet_v2.py`
+6. `scripts/record_figure_visual_review_v2.py`
+7. `scripts/publish_note_final_v2.py` for atomic publication
+8. `scripts/lint_vault.py` after navigation and links are rebuilt
+
+All stage artifacts must use schema v2 and share `paper_id` and `run_id`. Run outputs
+belong under `.local/deeppapernote/runs/<run_id>/`. The unversioned MVP scripts remain
+compatibility tools and must not silently publish a schema-v2 note.

@@ -14,7 +14,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-
 ARXIV_NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "arxiv": "http://arxiv.org/schemas/atom",
@@ -106,7 +105,15 @@ def normalize_title(text: str) -> str:
 
 LOCAL_PDF_PREFIX_PATTERN = re.compile(r"^(?:[^-]{1,120})\s+-\s+(?:19|20)\d{2}\s+-\s+")
 LOCAL_PDF_SUFFIX_ID_PATTERN = re.compile(r"\s*-\s*\d{4,}\s*$")
-PREPRINT_HINTS = ("medrxiv", "biorxiv", "preprint", "arxiv", "10.1101/", "10.21203/rs.", "preprints.org")
+PREPRINT_HINTS = (
+    "medrxiv",
+    "biorxiv",
+    "preprint",
+    "arxiv",
+    "10.1101/",
+    "10.21203/rs.",
+    "preprints.org",
+)
 PDF_LIGATURE_MAP = {
     "\u00df": "ss",
     "\ufb00": "ff",
@@ -135,7 +142,10 @@ def is_probable_local_pdf_artifact_title(title: str) -> bool:
         return True
     if LOCAL_PDF_SUFFIX_ID_PATTERN.search(normalized):
         return True
-    return bool(re.search(r"\b(?:et al\.?|等)\b", normalized, flags=re.IGNORECASE) and re.search(r"\b(?:19|20)\d{2}\b", normalized))
+    return bool(
+        re.search(r"\b(?:et al\.?|等)\b", normalized, flags=re.IGNORECASE)
+        and re.search(r"\b(?:19|20)\d{2}\b", normalized)
+    )
 
 
 def normalize_pdf_text_artifacts(text: str) -> str:
@@ -188,7 +198,9 @@ def env_config_value(*names: str, default: str = "") -> str:
         value = os.environ.get(name, "").strip()
         if value:
             return value
-    disable_shell_fallback = os.environ.get("DEEPPAPERNOTE_DISABLE_SHELL_CONFIG", "").strip().lower()
+    disable_shell_fallback = (
+        os.environ.get("DEEPPAPERNOTE_DISABLE_SHELL_CONFIG", "").strip().lower()
+    )
     if disable_shell_fallback in {"1", "true", "yes", "on"}:
         return default
     for name in names:
@@ -312,7 +324,9 @@ def paper_id_for_record(record: dict[str, Any]) -> str:
     if record.get("zotero_key"):
         return f"zotero:{record['zotero_key']}"
     if record.get("title"):
-        digest = hashlib.sha1(normalize_title(str(record["title"])).encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha1(normalize_title(str(record["title"])).encode("utf-8")).hexdigest()[
+            :12
+        ]
         return f"title:{digest}"
     source = str(record.get("source_url") or record.get("local_pdf_path") or "unknown")
     digest = hashlib.sha1(source.encode("utf-8")).hexdigest()[:12]
@@ -325,7 +339,9 @@ def http_get_text(url: str, *, timeout: int = 30, headers: dict[str, str] | None
         return response.read().decode("utf-8")
 
 
-def http_get_json(url: str, *, timeout: int = 30, headers: dict[str, str] | None = None) -> dict[str, Any]:
+def http_get_json(
+    url: str, *, timeout: int = 30, headers: dict[str, str] | None = None
+) -> dict[str, Any]:
     return json.loads(http_get_text(url, timeout=timeout, headers=headers))
 
 
@@ -364,10 +380,14 @@ def parse_arxiv_xml(xml_content: str) -> list[dict[str, Any]]:
         paper["title"] = normalize_whitespace(title_elem.text if title_elem is not None else "")
 
         summary_elem = entry.find("atom:summary", ARXIV_NS)
-        paper["abstract"] = normalize_whitespace(summary_elem.text if summary_elem is not None else "")
+        paper["abstract"] = normalize_whitespace(
+            summary_elem.text if summary_elem is not None else ""
+        )
 
         journal_ref_elem = entry.find("arxiv:journal_ref", ARXIV_NS)
-        journal_ref = normalize_whitespace(journal_ref_elem.text if journal_ref_elem is not None else "")
+        journal_ref = normalize_whitespace(
+            journal_ref_elem.text if journal_ref_elem is not None else ""
+        )
         if journal_ref:
             paper["venue"] = journal_ref
 
@@ -397,7 +417,9 @@ def parse_arxiv_xml(xml_content: str) -> list[dict[str, Any]]:
     return papers
 
 
-def fetch_arxiv_entries(*, search_query: str = "", id_list: str = "", max_results: int = 10) -> list[dict[str, Any]]:
+def fetch_arxiv_entries(
+    *, search_query: str = "", id_list: str = "", max_results: int = 10
+) -> list[dict[str, Any]]:
     params = urllib.parse.urlencode(
         {
             "search_query": search_query,
@@ -418,9 +440,13 @@ def fetch_arxiv_entries(*, search_query: str = "", id_list: str = "", max_result
         return []
 
 
-def safe_fetch_arxiv_entries(*, search_query: str = "", id_list: str = "", max_results: int = 10) -> list[dict[str, Any]]:
+def safe_fetch_arxiv_entries(
+    *, search_query: str = "", id_list: str = "", max_results: int = 10
+) -> list[dict[str, Any]]:
     try:
-        return fetch_arxiv_entries(search_query=search_query, id_list=id_list, max_results=max_results)
+        return fetch_arxiv_entries(
+            search_query=search_query, id_list=id_list, max_results=max_results
+        )
     except Exception:
         return []
 
@@ -447,7 +473,12 @@ def normalize_crossref_work(item: dict[str, Any]) -> dict[str, Any]:
         or []
     )
     year = ""
-    if published and isinstance(published, list) and isinstance(published[0], list) and published[0]:
+    if (
+        published
+        and isinstance(published, list)
+        and isinstance(published[0], list)
+        and published[0]
+    ):
         year = str(published[0][0])
     doi = normalize_whitespace(str(item.get("DOI", "")))
     source_url = normalize_whitespace(str(item.get("URL", "")))
@@ -482,7 +513,9 @@ def fetch_crossref_by_doi(doi: str) -> dict[str, Any] | None:
 def search_crossref_by_title(title: str, *, limit: int = 5) -> list[dict[str, Any]]:
     params = urllib.parse.urlencode({"query.title": title, "rows": limit})
     try:
-        data = http_get_json(f"{CROSSREF_WORKS_URL}?{params}", headers={"User-Agent": DEFAULT_USER_AGENT})
+        data = http_get_json(
+            f"{CROSSREF_WORKS_URL}?{params}", headers={"User-Agent": DEFAULT_USER_AGENT}
+        )
     except Exception:
         return []
     items = data.get("message", {}).get("items", []) or []
@@ -570,8 +603,12 @@ def normalize_openalex_work(item: dict[str, Any]) -> dict[str, Any]:
     pdf_url = normalize_whitespace(str((primary_location.get("pdf_url") or "")))
     if not pdf_url:
         best_oa = item.get("best_oa_location", {}) or {}
-        pdf_url = normalize_whitespace(str(best_oa.get("pdf_url") or best_oa.get("landing_page_url") or ""))
-    venue = normalize_whitespace(str((primary_location.get("source", {}) or {}).get("display_name", "")))
+        pdf_url = normalize_whitespace(
+            str(best_oa.get("pdf_url") or best_oa.get("landing_page_url") or "")
+        )
+    venue = normalize_whitespace(
+        str((primary_location.get("source", {}) or {}).get("display_name", ""))
+    )
     year = normalize_whitespace(str(item.get("publication_year", "")))
     return {
         "title": title,
@@ -603,7 +640,9 @@ def fetch_openalex_by_doi(doi: str) -> dict[str, Any] | None:
 def search_openalex_by_title(title: str, *, limit: int = 5) -> list[dict[str, Any]]:
     params = urllib.parse.urlencode({"search": title, "per-page": limit})
     try:
-        data = http_get_json(f"{OPENALEX_WORKS_URL}?{params}", headers={"User-Agent": DEFAULT_USER_AGENT})
+        data = http_get_json(
+            f"{OPENALEX_WORKS_URL}?{params}", headers={"User-Agent": DEFAULT_USER_AGENT}
+        )
     except Exception:
         return []
     items = data.get("results", []) or []
@@ -691,7 +730,9 @@ def resolve_reference(value: str) -> dict[str, Any]:
             "source_type": "local_pdf",
             "source_url": str(path),
             "local_pdf_path": str(path),
-            "title": normalize_whitespace(str(hints.get("title", ""))) or clean_local_pdf_stem(path.stem) or path.stem.replace("_", " "),
+            "title": normalize_whitespace(str(hints.get("title", "")))
+            or clean_local_pdf_stem(path.stem)
+            or path.stem.replace("_", " "),
             "metadata_sources": ["local_pdf"],
         }
         doi = normalize_whitespace(str(hints.get("doi", "")))
@@ -768,7 +809,15 @@ def resolve_reference(value: str) -> dict[str, Any]:
     )
     best = choose_best_title_match(title, candidates)
     if best:
-        best = merge_metadata_records({"title": title, "source_type": "title_query", "source_url": "", "metadata_sources": ["title_query"]}, best)
+        best = merge_metadata_records(
+            {
+                "title": title,
+                "source_type": "title_query",
+                "source_url": "",
+                "metadata_sources": ["title_query"],
+            },
+            best,
+        )
         best["status"] = "ok"
         return best
     paper = {
@@ -815,12 +864,18 @@ def enrich_metadata(record: dict[str, Any]) -> dict[str, Any]:
         cross = choose_best_title_match(title, search_crossref_by_title(title, limit=5))
         if cross:
             candidates.append(cross)
-        arxiv = choose_best_title_match(title, safe_fetch_arxiv_entries(search_query=f'ti:"{title}"', max_results=5))
+        arxiv = choose_best_title_match(
+            title, safe_fetch_arxiv_entries(search_query=f'ti:"{title}"', max_results=5)
+        )
         if arxiv:
             candidates.append(arxiv)
 
     merged = merge_metadata_records(*candidates)
-    if not merged.get("year") and merged.get("published") and re.match(r"^\d{4}", str(merged["published"])):
+    if (
+        not merged.get("year")
+        and merged.get("published")
+        and re.match(r"^\d{4}", str(merged["published"]))
+    ):
         merged["year"] = str(merged["published"])[:4]
     if merged.get("doi") and not merged.get("source_url"):
         merged["source_url"] = f"https://doi.org/{merged['doi']}"
@@ -864,7 +919,9 @@ def configured_obsidian_vault(config: dict[str, Any]) -> Path | None:
 def require_obsidian_vault(config: dict[str, Any]) -> Path:
     vault_path = configured_obsidian_vault(config)
     if vault_path is None:
-        raise RuntimeError("Missing Obsidian vault configuration. Set DEEPPAPERNOTE_OBSIDIAN_VAULT.")
+        raise RuntimeError(
+            "Missing Obsidian vault configuration. Set DEEPPAPERNOTE_OBSIDIAN_VAULT."
+        )
     return vault_path
 
 
@@ -873,21 +930,94 @@ def resolve_note_output_mode(config: dict[str, Any]) -> tuple[str, Path]:
     if vault_path is not None:
         return ("obsidian", vault_path)
     workspace_root = Path.cwd().resolve()
-    output_dir = str(config.get("workspace_output_dir", "DeepPaperNote_output")).strip() or "DeepPaperNote_output"
+    output_dir = (
+        str(config.get("workspace_output_dir", "DeepPaperNote_output")).strip()
+        or "DeepPaperNote_output"
+    )
     return ("workspace", workspace_root / output_dir)
 
 
 DOMAIN_RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("心理健康", ("mental health", "depression", "anxiety", "psychiatric", "psychology", "clinical", "patient", "counsel", "therapy")),
-    ("大模型", ("large language model", "llm", "foundation model", "gpt", "transformer", "instruction tuning", "pretrain", "pre-training", "language model", "agent", "reasoning")),
-    ("多模态", ("multimodal", "vision-language", "audio-visual", "video-language", "image-text", "cross-modal")),
-    ("计算机视觉", ("computer vision", "image classification", "object detection", "segmentation", "vision transformer", "visual recognition")),
-    ("强化学习", ("reinforcement learning", "policy optimization", "bandit", "markov decision process", "rl")),
-    ("语音", ("speech", "asr", "automatic speech recognition", "text-to-speech", "speaker recognition", "audio")),
+    (
+        "心理健康",
+        (
+            "mental health",
+            "depression",
+            "anxiety",
+            "psychiatric",
+            "psychology",
+            "clinical",
+            "patient",
+            "counsel",
+            "therapy",
+        ),
+    ),
+    (
+        "大模型",
+        (
+            "large language model",
+            "llm",
+            "foundation model",
+            "gpt",
+            "transformer",
+            "instruction tuning",
+            "pretrain",
+            "pre-training",
+            "language model",
+            "agent",
+            "reasoning",
+        ),
+    ),
+    (
+        "多模态",
+        (
+            "multimodal",
+            "vision-language",
+            "audio-visual",
+            "video-language",
+            "image-text",
+            "cross-modal",
+        ),
+    ),
+    (
+        "计算机视觉",
+        (
+            "computer vision",
+            "image classification",
+            "object detection",
+            "segmentation",
+            "vision transformer",
+            "visual recognition",
+        ),
+    ),
+    (
+        "强化学习",
+        (
+            "reinforcement learning",
+            "policy optimization",
+            "bandit",
+            "markov decision process",
+            "rl",
+        ),
+    ),
+    (
+        "语音",
+        (
+            "speech",
+            "asr",
+            "automatic speech recognition",
+            "text-to-speech",
+            "speaker recognition",
+            "audio",
+        ),
+    ),
     ("推荐系统", ("recommendation", "recommender", "ctr prediction", "ranking system")),
     ("机器人", ("robot", "robotics", "manipulation", "navigation", "control policy")),
     ("图学习", ("graph neural network", "graph learning", "molecular graph", "gnn")),
-    ("机器学习", ("machine learning", "deep learning", "neural network", "representation learning")),
+    (
+        "机器学习",
+        ("machine learning", "deep learning", "neural network", "representation learning"),
+    ),
 ]
 
 
@@ -945,7 +1075,14 @@ def domain_name_score(domain_name: str, label: str, title: str, abstract: str) -
     if name in lower:
         score += 15
     aliases = {
-        "大模型": ("llm", "large language model", "language model", "transformer", "agent", "multimodal"),
+        "大模型": (
+            "llm",
+            "large language model",
+            "language model",
+            "transformer",
+            "agent",
+            "multimodal",
+        ),
         "心理健康": ("depression", "anxiety", "mental health", "clinical", "patient", "therapy"),
     }
     for canonical, terms in aliases.items():
@@ -954,7 +1091,9 @@ def domain_name_score(domain_name: str, label: str, title: str, abstract: str) -
     return score
 
 
-def resolve_domain_subdir(config: dict[str, Any], *, title: str, abstract: str = "", subdir: str = "") -> str:
+def resolve_domain_subdir(
+    config: dict[str, Any], *, title: str, abstract: str = "", subdir: str = ""
+) -> str:
     if subdir.strip():
         return subdir.strip()
     return paper_folder_name(title)
@@ -1032,12 +1171,43 @@ def normalize_heading(line: str) -> str:
 SECTION_ALIASES = {
     "abstract": {"abstract"},
     "introduction": {"introduction", "background", "preliminaries", "preliminary"},
-    "method": {"method", "methods", "approach", "approaches", "methodology", "framework", "model", "models"},
-    "experiment": {"experiment", "experiments", "evaluation", "evaluations", "results", "analysis", "ablations", "ablation"},
-    "conclusion": {"conclusion", "conclusions", "discussion", "discussions", "future work", "limitations"},
+    "method": {
+        "method",
+        "methods",
+        "approach",
+        "approaches",
+        "methodology",
+        "framework",
+        "model",
+        "models",
+    },
+    "experiment": {
+        "experiment",
+        "experiments",
+        "evaluation",
+        "evaluations",
+        "results",
+        "analysis",
+        "ablations",
+        "ablation",
+    },
+    "conclusion": {
+        "conclusion",
+        "conclusions",
+        "discussion",
+        "discussions",
+        "future work",
+        "limitations",
+    },
 }
 
-STOP_SECTION_ALIASES = {"references", "appendix", "appendices", "acknowledgments", "acknowledgements"}
+STOP_SECTION_ALIASES = {
+    "references",
+    "appendix",
+    "appendices",
+    "acknowledgments",
+    "acknowledgements",
+}
 
 
 def match_section_heading(line: str) -> str | None:
@@ -1110,7 +1280,9 @@ def is_plausible_pdf_title_line(line: str) -> bool:
         return False
     if normalized.count(",") >= 3:
         return False
-    if any(token in lower for token in ["doi.org/", "http://", "https://", "www.", "check for updates"]):
+    if any(
+        token in lower for token in ["doi.org/", "http://", "https://", "www.", "check for updates"]
+    ):
         return False
     if lower in {"abstract", "article", "preprint"}:
         return False
@@ -1160,7 +1332,9 @@ def extract_local_pdf_hints(pdf_path: Path) -> dict[str, Any]:
         if page_title:
             hints["title"] = page_title
 
-    searchable = "\n".join(part for part in [metadata_subject, metadata_title, first_page_text] if part)
+    searchable = "\n".join(
+        part for part in [metadata_subject, metadata_title, first_page_text] if part
+    )
     doi = extract_doi(searchable)
     if doi:
         hints["doi"] = doi
@@ -1175,7 +1349,11 @@ def choose_local_pdf_corrected_title(base: dict[str, Any], candidates: list[dict
     current_title = normalize_whitespace(str(base.get("title", "")))
     if not current_title or not is_probable_local_pdf_artifact_title(current_title):
         return ""
-    titled_candidates = [candidate for candidate in candidates if normalize_whitespace(str(candidate.get("title", "")))]
+    titled_candidates = [
+        candidate
+        for candidate in candidates
+        if normalize_whitespace(str(candidate.get("title", "")))
+    ]
     best = choose_best_title_match(current_title, titled_candidates)
     if not best:
         return ""
@@ -1218,11 +1396,36 @@ def extract_caption_lines(pdf_text: str, kind: str) -> list[dict[str, str]]:
 def infer_paper_type(title: str, abstract: str) -> tuple[str, str]:
     lower = f"{title} {abstract}".lower()
     if any(token in lower for token in ["survey", "overview", "tutorial"]):
-        return "humanities_or_social_science", "The paper is survey-like or overview-oriented rather than a single empirical method report."
-    if any(token in lower for token in ["benchmark", "leaderboard", "evaluation suite", "dataset", "corpus"]):
-        return "benchmark_or_dataset", "The paper emphasizes benchmark, dataset, or evaluation design."
-    if any(token in lower for token in ["depression", "anxiety", "mental health", "clinical", "patient", "psychiatric", "psychological", "hospital"]):
-        return "clinical_or_psychology_empirical", "The paper is closer to an empirical clinical or psychology study."
+        return (
+            "humanities_or_social_science",
+            "The paper is survey-like or overview-oriented rather than a single empirical ",
+            "method report.",
+        )
+    if any(
+        token in lower
+        for token in ["benchmark", "leaderboard", "evaluation suite", "dataset", "corpus"]
+    ):
+        return (
+            "benchmark_or_dataset",
+            "The paper emphasizes benchmark, dataset, or evaluation design.",
+        )
+    if any(
+        token in lower
+        for token in [
+            "depression",
+            "anxiety",
+            "mental health",
+            "clinical",
+            "patient",
+            "psychiatric",
+            "psychological",
+            "hospital",
+        ]
+    ):
+        return (
+            "clinical_or_psychology_empirical",
+            "The paper is closer to an empirical clinical or psychology study.",
+        )
     return "AI_method", "The paper is best treated as a method-focused technical paper."
 
 
@@ -1230,9 +1433,14 @@ def extract_dataset_candidates(text: str) -> list[str]:
     found: list[str] = []
     seen = set()
     for sentence in split_sentences(text):
-        if not any(token in sentence.lower() for token in ["dataset", "benchmark", "corpus", "participants", "patients"]):
+        if not any(
+            token in sentence.lower()
+            for token in ["dataset", "benchmark", "corpus", "participants", "patients"]
+        ):
             continue
-        candidates = re.findall(r"\b[A-Z][A-Za-z0-9+\-]{2,}(?:[ -][A-Z][A-Za-z0-9+\-]{2,})?\b", sentence)
+        candidates = re.findall(
+            r"\b[A-Z][A-Za-z0-9+\-]{2,}(?:[ -][A-Z][A-Za-z0-9+\-]{2,})?\b", sentence
+        )
         for candidate in candidates:
             norm = candidate.lower()
             if norm in seen:
@@ -1251,7 +1459,22 @@ def extract_metric_claims(text: str) -> list[str]:
         lower = sentence.lower()
         if not re.search(r"\d", sentence):
             continue
-        if not any(token in lower for token in ["accuracy", "f1", "auc", "auprc", "mae", "rmse", "score", "%", "outperform", "improv", "bac"]):
+        if not any(
+            token in lower
+            for token in [
+                "accuracy",
+                "f1",
+                "auc",
+                "auprc",
+                "mae",
+                "rmse",
+                "score",
+                "%",
+                "outperform",
+                "improv",
+                "bac",
+            ]
+        ):
             continue
         normalized = normalize_whitespace(sentence)
         key = normalize_title(normalized)
@@ -1338,13 +1561,17 @@ def extract_negative_claims(text: str, *, limit: int = 6) -> list[str]:
         lower = normalized.lower()
         has_explicit_negative = any(token in lower for token in explicit_negative_tokens)
         has_ablation_marker = any(token in lower for token in ablation_tokens)
-        has_performance_context = any(token in lower for token in performance_tokens) or bool(re.search(r"\d", normalized))
+        has_performance_context = any(token in lower for token in performance_tokens) or bool(
+            re.search(r"\d", normalized)
+        )
         has_positive_only = any(token in lower for token in positive_only_tokens)
 
         if not has_explicit_negative:
             if not (has_ablation_marker and has_performance_context):
                 continue
-            if has_positive_only and not any(token in lower for token in ["trade-off", "tradeoff", "sensitive", "stability"]):
+            if has_positive_only and not any(
+                token in lower for token in ["trade-off", "tradeoff", "sensitive", "stability"]
+            ):
                 continue
 
         key = normalize_title(normalized)

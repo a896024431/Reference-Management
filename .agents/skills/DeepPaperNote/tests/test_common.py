@@ -1,3 +1,5 @@
+# ruff: noqa: E501
+# Long literals intentionally mirror real metadata fixtures.
 from __future__ import annotations
 
 import json
@@ -8,25 +10,24 @@ from pathlib import Path
 
 from common import (
     clean_local_pdf_stem,
-    extract_local_pdf_hints,
+    enrich_metadata,
     env_config_value,
     existing_domain_dirs,
     extract_arxiv_id,
     extract_doi,
+    extract_local_pdf_hints,
     extract_mechanism_flow_sentences,
     extract_negative_claims,
+    fetch_arxiv_entries,
     infer_domain_label,
     infer_source_type,
-    fetch_arxiv_entries,
-    enrich_metadata,
     normalize_pdf_text_artifacts,
-    resolve_reference,
     resolve_domain_subdir,
     resolve_note_output_mode,
     resolve_obsidian_note_path,
+    resolve_reference,
     semantic_scholar_headers,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_SCRIPT = PROJECT_ROOT / "scripts" / "check_environment.py"
@@ -82,14 +83,22 @@ def test_infer_source_type_for_local_pdf(tmp_path: Path) -> None:
 
 def test_clean_local_pdf_stem_removes_zotero_style_noise() -> None:
     stem = "Xu 等 - 2025 - Identifying psychiatric manifestations in outpatients with depression and anxiety a large language-182952"
-    assert clean_local_pdf_stem(stem) == "Identifying psychiatric manifestations in outpatients with depression and anxiety a large language"
+    assert (
+        clean_local_pdf_stem(stem)
+        == "Identifying psychiatric manifestations in outpatients with depression and anxiety a large language"
+    )
 
 
 def test_normalize_pdf_text_artifacts_expands_ligatures() -> None:
-    assert normalize_pdf_text_artifacts("Efﬁcient ﬂow oﬀers aﬃne aﬄuent") == "Efficient flow offers affine affluent"
+    assert (
+        normalize_pdf_text_artifacts("Efﬁcient ﬂow oﬀers aﬃne aﬄuent")
+        == "Efficient flow offers affine affluent"
+    )
 
 
-def test_extract_local_pdf_hints_prefers_pdf_metadata_title_and_doi(tmp_path: Path, monkeypatch) -> None:
+def test_extract_local_pdf_hints_prefers_pdf_metadata_title_and_doi(
+    tmp_path: Path, monkeypatch
+) -> None:
     pdf_path = tmp_path / "paper.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     fake_doc = FakePdfDoc(
@@ -103,11 +112,16 @@ def test_extract_local_pdf_hints_prefers_pdf_metadata_title_and_doi(tmp_path: Pa
 
     hints = extract_local_pdf_hints(pdf_path)
 
-    assert hints["title"] == "Identifying psychiatric manifestations in outpatients with depression and anxiety: a large language model-based approach"
+    assert (
+        hints["title"]
+        == "Identifying psychiatric manifestations in outpatients with depression and anxiety: a large language model-based approach"
+    )
     assert hints["doi"] == "10.1038/s44184-025-00175-1"
 
 
-def test_extract_local_pdf_hints_falls_back_to_first_page_title(tmp_path: Path, monkeypatch) -> None:
+def test_extract_local_pdf_hints_falls_back_to_first_page_title(
+    tmp_path: Path, monkeypatch
+) -> None:
     pdf_path = tmp_path / "paper.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     fake_doc = FakePdfDoc(
@@ -170,51 +184,55 @@ def test_resolve_obsidian_note_path_in_workspace_mode(tmp_path: Path, monkeypatc
         "papers_dir": "Research/Papers",
     }
     path = resolve_obsidian_note_path(config, title="My Test Paper")
-    assert path == tmp_path / "DeepPaperNote_output" / "My_Test_Paper" / "My_Test_Paper.md"
+    assert path == tmp_path / "DeepPaperNote_output" / "My Test Paper" / "笔记.md"
 
 
-def test_resolve_obsidian_note_path_in_vault_mode(tmp_path: Path) -> None:
+def test_resolve_obsidian_note_path_uses_flat_vault_folder(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     vault.mkdir()
     config = {
         "obsidian_vault": str(vault),
-        "papers_dir": "Research/Papers",
+        "papers_dir": "Research",
         "workspace_output_dir": "DeepPaperNote_output",
     }
-    path = resolve_obsidian_note_path(config, title="My Test Paper", subdir="心理健康")
-    assert path == vault / "Research/Papers" / "心理健康" / "My_Test_Paper" / "My_Test_Paper.md"
+    path = resolve_obsidian_note_path(config, title="My Test Paper")
+    assert path == vault / "Research" / "My Test Paper" / "笔记.md"
 
 
-def test_resolve_obsidian_note_path_avoids_double_slug_when_subdir_already_contains_slug(tmp_path: Path) -> None:
+def test_resolve_obsidian_note_path_does_not_duplicate_explicit_paper_folder(
+    tmp_path: Path,
+) -> None:
     vault = tmp_path / "vault"
     vault.mkdir()
     config = {
         "obsidian_vault": str(vault),
-        "papers_dir": "Research/Papers",
-        "workspace_output_dir": "DeepPaperNote_output",
-    }
-    path = resolve_obsidian_note_path(
-        config,
-        title="My Test Paper",
-        subdir="心理健康/My_Test_Paper",
-    )
-    assert path == vault / "Research/Papers" / "心理健康" / "My_Test_Paper" / "My_Test_Paper.md"
-
-
-def test_resolve_obsidian_note_path_avoids_double_slug_when_subdir_is_papers_relative_path(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    vault.mkdir()
-    config = {
-        "obsidian_vault": str(vault),
-        "papers_dir": "Research/Papers",
+        "papers_dir": "Research",
         "workspace_output_dir": "DeepPaperNote_output",
     }
     path = resolve_obsidian_note_path(
         config,
         title="My Test Paper",
-        subdir="Research/Papers/心理健康/My_Test_Paper",
+        subdir="My Test Paper",
     )
-    assert path == vault / "Research/Papers" / "心理健康" / "My_Test_Paper" / "My_Test_Paper.md"
+    assert path == vault / "Research" / "My Test Paper" / "笔记.md"
+
+
+def test_resolve_obsidian_note_path_accepts_research_relative_paper_folder(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = {
+        "obsidian_vault": str(vault),
+        "papers_dir": "Research",
+        "workspace_output_dir": "DeepPaperNote_output",
+    }
+    path = resolve_obsidian_note_path(
+        config,
+        title="My Test Paper",
+        subdir="Research/My Test Paper",
+    )
+    assert path == vault / "Research" / "My Test Paper" / "笔记.md"
 
 
 def test_existing_domain_dirs_excludes_root_level_paper_folder(tmp_path: Path) -> None:
@@ -223,7 +241,7 @@ def test_existing_domain_dirs_excludes_root_level_paper_folder(tmp_path: Path) -
     (papers / "大模型").mkdir(parents=True)
     paper_dir = papers / "Attention_Is_All_You_Need"
     paper_dir.mkdir(parents=True)
-    (paper_dir / "Attention_Is_All_You_Need.md").write_text("# note\n", encoding="utf-8")
+    (paper_dir / "笔记.md").write_text("# note\n", encoding="utf-8")
 
     config = {
         "obsidian_vault": str(vault),
@@ -233,7 +251,7 @@ def test_existing_domain_dirs_excludes_root_level_paper_folder(tmp_path: Path) -
     assert existing_domain_dirs(config) == ["大模型"]
 
 
-def test_resolve_domain_subdir_prefers_existing_domain(tmp_path: Path) -> None:
+def test_resolve_domain_subdir_uses_flat_paper_folder(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     papers = vault / "Research" / "Papers"
     (papers / "大模型").mkdir(parents=True)
@@ -252,7 +270,9 @@ def test_resolve_domain_subdir_prefers_existing_domain(tmp_path: Path) -> None:
         title="Seeing, Listening, Remembering, and Reasoning: A Multimodal Agent with Long-Term Memory",
         abstract="We present a multimodal large language model agent with long-term memory for reasoning over video and audio.",
     )
-    assert resolved == "大模型"
+    assert resolved == (
+        "Seeing, Listening, Remembering, and Reasoning A Multimodal Agent with Long-Term Memory"
+    )
 
 
 def test_infer_domain_label_defaults_to_psychology_when_relevant() -> None:
@@ -352,7 +372,10 @@ def test_resolve_reference_title_survives_arxiv_failure(monkeypatch) -> None:
     monkeypatch.setattr("common.search_semantic_scholar", lambda *args, **kwargs: [semantic_match])
     monkeypatch.setattr("common.search_crossref_by_title", lambda *args, **kwargs: [])
     monkeypatch.setattr("common.search_openalex_by_title", lambda *args, **kwargs: [])
-    monkeypatch.setattr("common.fetch_arxiv_entries", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("arxiv down")))
+    monkeypatch.setattr(
+        "common.fetch_arxiv_entries",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("arxiv down")),
+    )
 
     resolved = resolve_reference("Example Paper")
 
@@ -374,9 +397,14 @@ def test_enrich_metadata_survives_arxiv_failure(monkeypatch) -> None:
     monkeypatch.setattr("common.search_semantic_scholar", lambda *args, **kwargs: [semantic_match])
     monkeypatch.setattr("common.search_crossref_by_title", lambda *args, **kwargs: [])
     monkeypatch.setattr("common.search_openalex_by_title", lambda *args, **kwargs: [])
-    monkeypatch.setattr("common.fetch_arxiv_entries", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("arxiv down")))
+    monkeypatch.setattr(
+        "common.fetch_arxiv_entries",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("arxiv down")),
+    )
 
-    enriched = enrich_metadata({"title": "Example Paper", "arxiv_id": "2501.00001", "metadata_sources": ["seed_record"]})
+    enriched = enrich_metadata(
+        {"title": "Example Paper", "arxiv_id": "2501.00001", "metadata_sources": ["seed_record"]}
+    )
 
     assert enriched["title"] == "Example Paper"
     assert enriched["doi"] == "10.1000/example"
@@ -444,7 +472,9 @@ def test_enrich_metadata_local_pdf_prefers_published_doi_over_preprint(monkeypat
     monkeypatch.setattr("common.search_semantic_scholar", lambda *args, **kwargs: [])
     monkeypatch.setattr("common.search_openalex_by_title", lambda *args, **kwargs: [])
     monkeypatch.setattr("common.safe_fetch_arxiv_entries", lambda *args, **kwargs: [])
-    monkeypatch.setattr("common.search_crossref_by_title", lambda *args, **kwargs: [preprint, published])
+    monkeypatch.setattr(
+        "common.search_crossref_by_title", lambda *args, **kwargs: [preprint, published]
+    )
 
     enriched = enrich_metadata(
         {
@@ -455,7 +485,10 @@ def test_enrich_metadata_local_pdf_prefers_published_doi_over_preprint(monkeypat
         }
     )
 
-    assert enriched["title"] == "Identifying psychiatric manifestations in outpatients with depression and anxiety: a large language model-based approach"
+    assert (
+        enriched["title"]
+        == "Identifying psychiatric manifestations in outpatients with depression and anxiety: a large language model-based approach"
+    )
     assert enriched["doi"] == "10.1038/s44184-025-00175-1"
     assert enriched["venue"] == "npj Mental Health Research"
 
@@ -465,12 +498,17 @@ def test_enrich_metadata_backfills_arxiv_doi_when_missing(monkeypatch) -> None:
     monkeypatch.setattr("common.search_semantic_scholar", lambda *args, **kwargs: [])
     monkeypatch.setattr("common.search_crossref_by_title", lambda *args, **kwargs: [])
     monkeypatch.setattr("common.search_openalex_by_title", lambda *args, **kwargs: [])
-    enriched = enrich_metadata({"title": "Example Paper", "arxiv_id": "2302.13971", "metadata_sources": ["seed_record"]})
+    enriched = enrich_metadata(
+        {"title": "Example Paper", "arxiv_id": "2302.13971", "metadata_sources": ["seed_record"]}
+    )
     assert enriched["doi"] == "10.48550/arXiv.2302.13971"
 
 
 def test_resolve_reference_arxiv_id_survives_arxiv_failure(monkeypatch) -> None:
-    monkeypatch.setattr("common.fetch_arxiv_entries", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("arxiv down")))
+    monkeypatch.setattr(
+        "common.fetch_arxiv_entries",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("arxiv down")),
+    )
 
     resolved = resolve_reference("2501.00001")
 
@@ -480,7 +518,10 @@ def test_resolve_reference_arxiv_id_survives_arxiv_failure(monkeypatch) -> None:
 
 
 def test_resolve_reference_arxiv_url_survives_arxiv_failure(monkeypatch) -> None:
-    monkeypatch.setattr("common.fetch_arxiv_entries", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("arxiv down")))
+    monkeypatch.setattr(
+        "common.fetch_arxiv_entries",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("arxiv down")),
+    )
 
     resolved = resolve_reference("https://arxiv.org/abs/2501.00001")
 

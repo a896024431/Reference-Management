@@ -11,8 +11,14 @@ from pathlib import Path
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__ or "run pipeline")
-    p.add_argument("--input", required=True, help="Paper title, DOI, URL, arXiv id, local PDF path, or JSON artifact.")
-    p.add_argument("--workdir", default="tmp/DeepPaperNote_runs", help="Directory for intermediate artifacts.")
+    p.add_argument(
+        "--input",
+        required=True,
+        help="Paper title, DOI, URL, arXiv id, local PDF path, or JSON artifact.",
+    )
+    p.add_argument(
+        "--workdir", default="tmp/DeepPaperNote_runs", help="Directory for intermediate artifacts."
+    )
     p.add_argument("--prefix", default="run", help="Filename prefix for artifacts.")
     return p
 
@@ -35,11 +41,49 @@ def main() -> None:
     figures_json = workdir / f"{args.prefix}_figures.json"
     bundle_json = workdir / f"{args.prefix}_bundle.json"
     py = sys.executable
-    run_step([py, str(scripts_dir / "resolve_paper.py"), "--input", args.input, "--output", str(resolve_json)])
-    run_step([py, str(scripts_dir / "collect_metadata.py"), "--input", args.input, "--output", str(metadata_json)])
-    run_step([py, str(scripts_dir / "fetch_pdf.py"), "--input", args.input, "--output", str(fetch_json)])
-    run_step([py, str(scripts_dir / "extract_evidence.py"), "--input", str(fetch_json), "--output", str(evidence_json)])
-    run_step([py, str(scripts_dir / "extract_pdf_assets.py"), "--input", str(fetch_json), "--output", str(assets_json)])
+    run_step(
+        [
+            py,
+            str(scripts_dir / "resolve_paper.py"),
+            "--input",
+            args.input,
+            "--output",
+            str(resolve_json),
+        ]
+    )
+    run_step(
+        [
+            py,
+            str(scripts_dir / "collect_metadata.py"),
+            "--input",
+            args.input,
+            "--output",
+            str(metadata_json),
+        ]
+    )
+    run_step(
+        [py, str(scripts_dir / "fetch_pdf.py"), "--input", args.input, "--output", str(fetch_json)]
+    )
+    run_step(
+        [
+            py,
+            str(scripts_dir / "extract_evidence.py"),
+            "--input",
+            str(fetch_json),
+            "--output",
+            str(evidence_json),
+        ]
+    )
+    run_step(
+        [
+            py,
+            str(scripts_dir / "extract_pdf_assets.py"),
+            "--input",
+            str(fetch_json),
+            "--output",
+            str(assets_json),
+        ]
+    )
     run_step(
         [
             py,

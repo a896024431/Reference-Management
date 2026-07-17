@@ -1,3 +1,5 @@
+# ruff: noqa: E501
+# Long literals intentionally exercise complete Markdown fixtures.
 from __future__ import annotations
 
 from lint_note import (
@@ -138,7 +140,16 @@ def test_nonstandard_colon_and_english_figure_placeholders_fail_gate() -> None:
 Figure Placeholder | Fig. 3 reasoning example.
 """
     issues = figure_structure_issues(note)
-    assert len([issue for issue in issues if issue["reason"] == "nonstandard_figure_placeholder_format"]) == 2
+    assert (
+        len(
+            [
+                issue
+                for issue in issues
+                if issue["reason"] == "nonstandard_figure_placeholder_format"
+            ]
+        )
+        == 2
+    )
     assert figure_structure_passes(note) is False
 
 

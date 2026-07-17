@@ -16,7 +16,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--assets", default="", help="PDF assets JSON path or string.")
     p.add_argument("--output", default="", help="Output JSON path.")
     p.add_argument("--paper-id", default="", help="Canonical paper id.")
-    p.add_argument("--max-items", type=int, default=12, help="Maximum number of figure/table items to keep. 0 means keep all.")
+    p.add_argument(
+        "--max-items",
+        type=int,
+        default=12,
+        help="Maximum number of figure/table items to keep. 0 means keep all.",
+    )
     return p
 
 
@@ -36,25 +41,75 @@ def merge_inputs(primary: dict | None, evidence: dict | None, assets: dict | Non
 
 def classify_caption_kind(item_id: str, caption: str) -> tuple[str, str, str]:
     text = f"{item_id} {caption}".lower()
-    if any(token in text for token in ["pipeline", "framework", "overview", "architecture", "system", "workflow", "stage"]):
-        return "method_overview", "机制流程", "这张图概括了整体方法或系统流程；如果匹配置信度足够高，最适合放在 `### 机制流程` 帮助快速建立执行链理解。"
-    if any(token in text for token in ["dataset", "data", "corpus", "participants", "recordings", "setup", "distribution", "quality"]):
-        return "data_or_task", "数据与任务定义", "这张图更像任务设定或数据说明，放在数据与任务定义最合适。"
-    if any(token in text for token in ["accuracy", "score", "performance", "comparison", "win-rate", "results", "recall"]):
+    if any(
+        token in text
+        for token in [
+            "pipeline",
+            "framework",
+            "overview",
+            "architecture",
+            "system",
+            "workflow",
+            "stage",
+        ]
+    ):
+        return (
+            "method_overview",
+            "机制流程",
+            "这张图概括了整体方法或系统流程；如果匹配置信度足够高，最适合放在 `### 机制流程` 帮助快速建立执行链理解。",  # noqa: E501
+        )
+    if any(
+        token in text
+        for token in [
+            "dataset",
+            "data",
+            "corpus",
+            "participants",
+            "recordings",
+            "setup",
+            "distribution",
+            "quality",
+        ]
+    ):
+        return (
+            "data_or_task",
+            "数据与任务定义",
+            "这张图更像任务设定或数据说明，放在数据与任务定义最合适。",
+        )
+    if any(
+        token in text
+        for token in [
+            "accuracy",
+            "score",
+            "performance",
+            "comparison",
+            "win-rate",
+            "results",
+            "recall",
+        ]
+    ):
         return "main_result", "关键结果", "这张图或表直接承载主结果，适合放在关键结果部分。"
     if item_id.lower().startswith("table"):
         return "table_result", "关键结果", "这是关键结果表，适合放在关键结果部分辅助定位核心数值。"
-    return "supporting_figure", "深度分析", "这张图更适合作为补充图，放在深度分析部分帮助解释作者论点。"
+    return (
+        "supporting_figure",
+        "深度分析",
+        "这张图更适合作为补充图，放在深度分析部分帮助解释作者论点。",
+    )
 
 
 def build_figure_items(evidence_pack: dict, *, limit: int = 12) -> list[dict]:
     raw_items = []
     for item in evidence_pack.get("figure_captions", []) or []:
         if isinstance(item, dict):
-            raw_items.append({"id": item.get("id", ""), "caption": item.get("caption", ""), "source": "figure"})
+            raw_items.append(
+                {"id": item.get("id", ""), "caption": item.get("caption", ""), "source": "figure"}
+            )
     for item in evidence_pack.get("table_captions", []) or []:
         if isinstance(item, dict):
-            raw_items.append({"id": item.get("id", ""), "caption": item.get("caption", ""), "source": "table"})
+            raw_items.append(
+                {"id": item.get("id", ""), "caption": item.get("caption", ""), "source": "table"}
+            )
 
     grouped: dict[str, dict] = {}
     order: list[str] = []
@@ -252,7 +307,8 @@ def attach_candidate_images(
         if img_count > 0 or fig_count > 0:
             has_visual.add(pn)
     pages_with_images = [
-        page for page in page_assets
+        page
+        for page in page_assets
         if isinstance(page, dict) and int(page.get("page_number", 0) or 0) in has_visual
     ]
 
@@ -307,11 +363,10 @@ def attach_candidate_images(
                     "page_number": page_number,
                     "score": score,
                     "matched_terms": matched_terms[:6],
-                    "snippet": snippets[0] if snippets else normalize_whitespace(str(page.get("text_preview", "")))[:220],
-                    "images": [
-                        _asset_candidate(img)
-                        for img in image_map.get(page_number, [])[:3]
-                    ],
+                    "snippet": snippets[0]
+                    if snippets
+                    else normalize_whitespace(str(page.get("text_preview", "")))[:220],
+                    "images": [_asset_candidate(img) for img in image_map.get(page_number, [])[:3]],
                     "figure_assets": [
                         _asset_candidate(asset, include_label=True)
                         for asset in figure_map.get(page_number, [])[:3]
@@ -321,7 +376,9 @@ def attach_candidate_images(
 
         candidates.sort(key=lambda candidate: (-candidate["score"], candidate["page_number"]))
         item["candidate_pages"] = candidates[:3]
-        item["matching_strategy"] = "figure-asset-candidate" if fig_match else "page-proximity-and-caption-cues"
+        item["matching_strategy"] = (
+            "figure-asset-candidate" if fig_match else "page-proximity-and-caption-cues"
+        )
     return items
 
 
@@ -336,10 +393,16 @@ def main() -> None:
     if not data:
         raise SystemExit("plan_figures.py requires at least one JSON input.")
 
-    evidence_pack = data.get("evidence_pack", {}) if isinstance(data.get("evidence_pack"), dict) else {}
+    evidence_pack = (
+        data.get("evidence_pack", {}) if isinstance(data.get("evidence_pack"), dict) else {}
+    )
     page_assets = data.get("page_assets", []) if isinstance(data.get("page_assets"), list) else []
-    image_assets = data.get("image_assets", []) if isinstance(data.get("image_assets"), list) else []
-    figure_assets = data.get("figure_assets", []) if isinstance(data.get("figure_assets"), list) else []
+    image_assets = (
+        data.get("image_assets", []) if isinstance(data.get("image_assets"), list) else []
+    )
+    figure_assets = (
+        data.get("figure_assets", []) if isinstance(data.get("figure_assets"), list) else []
+    )
     items = build_figure_items(evidence_pack, limit=args.max_items)
     items = attach_candidate_images(items, page_assets, image_assets, figure_assets)
     payload = {

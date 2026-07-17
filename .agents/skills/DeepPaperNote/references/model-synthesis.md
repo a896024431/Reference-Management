@@ -39,28 +39,21 @@ The rule is simple:
    - require both identity match and visual usability before insertion
    - fail closed on caption-only crops, missing table bodies, table crops contaminated by running prose or another Figure/Table caption, large text/title/abstract crops, or very low visual body ratio
    - keep the final semantic matching decision on the model side
-   Build the note in placeholder-first order:
-   - plan placeholders for all major figures/tables that matter to the note
-   - replace a placeholder with a real image only when the candidate is good enough
-   - keep the original paper figure/table id in either case
-   - place every kept placeholder directly under its most relevant analytical section; never create catch-all sections such as `剩余图表占位`, `未放置图表`, `Remaining figures`, or `Leftover figures`
-   - treat `reject_visual_quality` as "do not insert this image", not as an obligation to keep a final-note placeholder for every rejected candidate
-   - for surveys, use prose rather than stacked callouts for repetitive representative-work figures or appendix tables that do not materially help the reader
-   - when keeping a placeholder, use the stable four-line callout format:
-     - `> [!figure] Fig. 3 ...`
-     - `> 建议位置：...`
-     - `> 放置原因：...`
-     - `> 当前状态：...`
-   - never use ordinary paragraph markers such as `[图表占位 | Fig. 1]`, `图表占位：Table 2`, or `Figure Placeholder | Fig. 3`
-   If you decide to insert a real image instead of leaving a placeholder:
+   Plan and decide figures before drafting, but separate run artifacts from reader-facing prose:
+   - record every major visual as `inserted`, `placeholder`, or `omitted` in `figure_decisions.json`
+   - insert an image only when both identity and visual usability are strong
+   - preserve the original paper figure/table ID in any published caption
+   - use a direct Obsidian embed and a natural, concise caption for an inserted image
+   - keep candidates, rejection reasons, crop details, hashes, target-section metadata, and QA evidence in run artifacts only
+   - never produce `[!figure]`, visible placeholders, `建议位置`, `放置原因`, `当前状态`, or other workflow text in the permanent note
+   - for surveys, use prose rather than low-value decorative images
+   If you decide to insert a real image:
    - call `scripts/materialize_figure_asset.py`
    - copy the chosen candidate image into the vault
    - insert the returned Obsidian embed into the note; Markdown image syntax is a compatibility fallback, not the preferred note format
    This figure step belongs to the same note-generation task:
    - do not stop after a text-only draft just to ask the user whether figures should be inserted
-   - finish the replacement-or-placeholder decision before final save
-   - if no image is good enough, keep the placeholder and still finish the note
-
+   - finish the decision before final save; an unavailable image remains a run-artifact decision, not a final-note placeholder
 3. Infer the paper type yourself from the bundle.
    Do not rely on old script classifications unless you are debugging.
 
@@ -171,7 +164,7 @@ The language model, not the scripts, must decide:
 - Do not repeat every extracted number just because it exists.
 - Do not copy the bundle structure mechanically.
 - Do not treat heuristic figure labels as paper conclusions.
-- Do not delete important figure/table placeholders just because extraction only found partial crops.
+- Do not let a missing image remove the corresponding evidence-based scientific explanation.
 - Do not flatten a technically rich paper into only broad `##` sections with no internal structure.
 - Do not reinterpret `vault configured but permission unavailable` as permission to silently downgrade into workspace mode.
 - Do not skip creation of the paper-local `images/` directory just because the current environment cannot write it yet.
@@ -202,7 +195,7 @@ Save-mode rule:
 
 If you already have the final Markdown in memory, `write_obsidian_note.py` also supports `--stdin`.
 If you selected a real figure image, use `materialize_figure_asset.py` before the final save.
-If you did not select any real figure image, still save the final note in one pass with placeholders intact.
+If you did not select a real figure image, still save the final note in one pass; retain the unavailable-figure decision only in the run artifacts.
 
 ## Completion-Language Rule
 

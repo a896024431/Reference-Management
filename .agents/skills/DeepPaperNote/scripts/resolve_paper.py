@@ -19,7 +19,9 @@ def main() -> None:
     else:
         resolved = resolve_reference(args.input)
 
-    resolved["paper_id"] = args.paper_id or resolved.get("paper_id") or paper_id_for_record(resolved)
+    resolved["paper_id"] = (
+        args.paper_id or resolved.get("paper_id") or paper_id_for_record(resolved)
+    )
     resolved["status"] = resolved.get("status") or "ok"
     resolved["script"] = "resolve_paper.py"
     emit(resolved, args.output)

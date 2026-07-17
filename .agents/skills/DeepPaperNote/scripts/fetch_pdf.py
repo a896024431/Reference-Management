@@ -20,7 +20,9 @@ from common import (
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__ or "fetch pdf")
-    p.add_argument("--input", required=True, help="Metadata JSON path, JSON string, or raw paper reference.")
+    p.add_argument(
+        "--input", required=True, help="Metadata JSON path, JSON string, or raw paper reference."
+    )
     p.add_argument("--output", default="", help="Output path for JSON status.")
     p.add_argument("--paper-id", default="", help="Canonical paper id if already known.")
     p.add_argument("--dest-dir", default="", help="Directory for downloaded PDFs.")

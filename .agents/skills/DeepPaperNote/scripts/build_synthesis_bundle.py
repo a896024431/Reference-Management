@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
+# ruff: noqa: E501
+# Long prompt literals intentionally remain verbatim for model instructions.
 """Assemble a model-facing synthesis bundle from deterministic DeepPaperNote artifacts."""
 
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 from common import maybe_load_json_record, normalize_whitespace
 
@@ -74,7 +75,9 @@ def sanitize_equation_candidates(evidence_pack: dict, *, limit: int = 8) -> list
     return sanitized
 
 
-def sanitize_candidate_chunks(evidence_pack: dict, *, limit_sections: int = 8, limit_chunks_per_section: int = 8) -> dict[str, list[dict]]:
+def sanitize_candidate_chunks(
+    evidence_pack: dict, *, limit_sections: int = 8, limit_chunks_per_section: int = 8
+) -> dict[str, list[dict]]:
     sanitized: dict[str, list[dict]] = {}
     candidate_chunks = evidence_pack.get("candidate_chunks", {}) or {}
     if not isinstance(candidate_chunks, dict):
@@ -102,7 +105,9 @@ def sanitize_candidate_chunks(evidence_pack: dict, *, limit_sections: int = 8, l
     return sanitized
 
 
-def sanitize_section_texts(evidence_pack: dict, *, limit_sections: int = 8, max_chars: int = 4000) -> dict[str, str]:
+def sanitize_section_texts(
+    evidence_pack: dict, *, limit_sections: int = 8, max_chars: int = 4000
+) -> dict[str, str]:
     sanitized: dict[str, str] = {}
     section_texts = evidence_pack.get("section_texts", {}) or {}
     if not isinstance(section_texts, dict):
@@ -156,9 +161,19 @@ def sanitize_figure_assets(assets_wrapper: dict, *, limit: int = 48) -> list[dic
     return sanitized
 
 
-def bundle(metadata: dict, evidence_wrapper: dict, figures_wrapper: dict, assets_wrapper: dict) -> dict:
-    evidence_pack = evidence_wrapper.get("evidence_pack", {}) if isinstance(evidence_wrapper.get("evidence_pack"), dict) else {}
-    figure_plan = figures_wrapper.get("figure_plan", {}) if isinstance(figures_wrapper.get("figure_plan"), dict) else {}
+def bundle(
+    metadata: dict, evidence_wrapper: dict, figures_wrapper: dict, assets_wrapper: dict
+) -> dict:
+    evidence_pack = (
+        evidence_wrapper.get("evidence_pack", {})
+        if isinstance(evidence_wrapper.get("evidence_pack"), dict)
+        else {}
+    )
+    figure_plan = (
+        figures_wrapper.get("figure_plan", {})
+        if isinstance(figures_wrapper.get("figure_plan"), dict)
+        else {}
+    )
 
     return {
         "status": "ok",
@@ -363,19 +378,17 @@ def bundle(metadata: dict, evidence_wrapper: dict, figures_wrapper: dict, assets
                 "rerun_rule": "If the readability review edits the note, rerun lint before write_obsidian_note.",
             },
             "figure_rules": [
-                "先规划主要图表的占位标签，再决定哪些可以替换成真实图片",
+                "先为每个主要图表记录 `inserted`、`placeholder` 或 `omitted` 决策；候选、原因和审核信息留在运行产物，不写进正式笔记。",
                 "label/caption match is not insertion approval; it only proves identity, and visual usability is a separate hard gate.",
                 "Reject caption-only crops, missing table body crops, table crops with paragraph or other-caption contamination, large text/title/abstract crops, and low visual body ratio crops.",
-                "If visual quality is missing, ambiguous, or marked review/reject, fail closed: keep the placeholder instead of inserting the image.",
-                "Every kept placeholder must appear directly under the most relevant analytical section named by its `建议位置`; do not collect unresolved placeholders in catch-all sections such as `剩余图表占位`, `未放置图表`, `Remaining figures`, or `Leftover figures`.",
-                "Every kept placeholder must use the standard `> [!figure]` callout with `建议位置`, `放置原因`, and `当前状态`; never use plain paragraph placeholders such as `[图表占位 | Fig. 1]`, `图表占位：Table 2`, or `Figure Placeholder | Fig. 3`.",
-                "`reject_visual_quality` means the candidate image is unsafe to insert; it does not require keeping a final-note placeholder for every rejected candidate.",
-                "For survey papers, summarize repetitive representative-work figures or appendix tables in prose when they do not materially help the reader as standalone callouts.",
-                "When inserting a real image, prefer the `obsidian_embed` returned by materialize_figure_asset.py; Markdown image syntax is a compatibility fallback, not the preferred note format.",
-                "如果没有高置信度图像匹配，不要删除占位标签",
+                "If visual quality is missing, ambiguous, or marked review/reject, fail closed: record a non-inserted decision instead of inserting the image.",
+                "`reject_visual_quality` means the candidate image is unsafe to insert; it does not require a reader-visible placeholder.",
+                "For survey papers, summarize repetitive representative-work figures or appendix tables in prose when they do not materially help the reader as standalone visuals.",
+                "When inserting a real image, prefer the `obsidian_embed` returned by materialize_figure_asset.py; add only a short natural caption with the original paper identifier.",
+                "如果没有高置信度图像匹配，保留运行记录中的决策，但不要在正式笔记中显示占位、状态或提取过程。",
                 "图注必须保留论文原始编号，例如 Fig. 1、Table 2",
-                "如果插入的是局部子图或不完整裁剪，必须明确说明",
-                "图可以不全，但文字覆盖必须完整",
+                "局部子图只在该事实会影响科学解读时说明，不能描述裁剪或复核过程。",
+                "图可以不全，但文字覆盖必须完整；正式笔记不得出现 `[!figure]`、`建议位置`、`放置原因` 或 `当前状态`。",
             ],
         },
     }

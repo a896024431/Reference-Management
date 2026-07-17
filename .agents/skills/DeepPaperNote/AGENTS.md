@@ -33,7 +33,7 @@ Future changes should preserve these product invariants:
 - the workflow remains evidence-first
 - required stages must not be silently skipped
 - weak evidence should fail closed rather than being presented as a full deep read
-- figure and table placeholder-first handling remains required
+- decision-first figure and table handling remains required; permanent notes remain reader-facing
 - lint plus final readability review remain required before completion
 - Obsidian-first save semantics remain intact
 - the paper-local `images/` directory remains part of the save protocol

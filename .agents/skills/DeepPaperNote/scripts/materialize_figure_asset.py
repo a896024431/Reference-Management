@@ -25,7 +25,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--vault", default="", help="Target Obsidian vault path.")
     p.add_argument("--subdir", default="", help="Vault-relative note subdirectory.")
     p.add_argument("--filename", default="", help="Optional note filename override.")
-    p.add_argument("--asset-subdir", default="images", help="Asset folder name relative to the note directory.")
+    p.add_argument(
+        "--asset-subdir", default="images", help="Asset folder name relative to the note directory."
+    )
     p.add_argument("--label", default="", help="Optional human-readable label for the figure.")
     p.add_argument("--output", default="", help="JSON output path.")
     return p
@@ -65,7 +67,9 @@ def main() -> None:
 
     output_mode, root_root = resolve_note_output_mode(config)
     relative_from_note = dest_image.relative_to(note_path.parent)
-    relative_markdown_embed = f"![{args.label or source_image.stem}]({relative_from_note.as_posix()})"
+    relative_markdown_embed = (
+        f"![{args.label or source_image.stem}]({relative_from_note.as_posix()})"
+    )
     absolute_markdown_embed = f"![{args.label or source_image.stem}]({dest_image})"
 
     payload = {

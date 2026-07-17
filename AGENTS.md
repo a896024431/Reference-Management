@@ -19,8 +19,8 @@
 
 ## DeepPaperNote 执行边界
 
-1. 目前暂不配置 Zotero 联动，也不安装 Zotero MCP。
-2. 若当前 Codex 会话没有 Zotero 工具，记录为 `Zotero not available`，然后继续使用 PDF、DOI、arXiv、URL 或开放元数据来源。
+1. Zotero/infiniCloud 是可选联动来源；运行时先探测已有通道，但本仓库不自动安装 Zotero MCP。
+2. 通道可用时优先使用可信本地库元数据与附件；不可用时继续使用本地 PDF、DOI、arXiv 或 URL。可用性只记录在 run manifest，禁止写入永久笔记。
 3. 不要恢复旧 Zotero 导入脚本、旧静态索引脚本或旧 `note/` 目录工作流。
 4. 如果 PDF 或全文证据不足，不要把结果说成完整深读笔记；应明确标记为证据不足或降级草稿。
 5. 写入 Obsidian 前按 DeepPaperNote 要求运行 lint 和最终可读性检查。
@@ -38,6 +38,8 @@
 - `.gitignore`
 - `.gitattributes`
 - `.agents/skills/DeepPaperNote/`
+- `.github/workflows/deeppapernote-v2.yml`
+- `Research/*.base`
 - `Research/**/*.md`
 - `Research/**/images/` 下的常见图片文件
 
@@ -54,9 +56,41 @@
 ```powershell
 git pull
 git status --short
-git add AGENTS.md README.md .gitignore .gitattributes .agents Research
+git add AGENTS.md README.md .gitignore .gitattributes .agents .github Research
 git commit -m "Update DeepPaperNote vault"
 git push
 ```
 
 同步前先检查 `git status --short --ignored`，确认没有 PDF、密钥、本机配置或临时构建目录进入 Git。
+
+## DeepPaperNote v2 overlay
+
+当前 Vault 使用 schema v2 overlay。读取 `SKILL.md` 及其必需 references 后，还必须读取：
+
+- `.agents/skills/DeepPaperNote/references/v2-workflow.md`
+- `.agents/skills/DeepPaperNote/references/vault-v2.md`
+
+确定性入口使用 `scripts/run_pipeline_final_v2.py`，中间产物默认写入
+`.local/deeppapernote/runs/<run_id>/`。正式笔记发布必须通过 v2 合同、证据、插图、
+可读性与 Vault 门禁；旧 MVP 脚本只作为兼容回退，不得静默发布 schema v2 笔记。
+
+读者可见的 `笔记.md` 只能展示通过门禁的真实图片及自然图注。`figure_decisions.json`、候选、裁剪、
+哈希、审核结果和 `placeholder/omitted` 决定只保存在 `.local/deeppapernote/runs/`；禁止把
+`建议位置`、`放置原因`、`当前状态`、`[!figure]` 或其他流程文本写入永久笔记。
+
+Zotero/infiniCloud 是可选 provider：运行时先探测并优先使用可信本地库命中；不可用时回退
+本地 PDF、DOI 或 arXiv。可用性只进入 run manifest，不得把 `Zotero not available`
+写进永久笔记。本轮不自动安装 Zotero MCP。
+
+### v2 最终发布链
+
+正式入口与门禁依次为：
+
+- `scripts/run_pipeline_final_v2.py`
+- `scripts/lint_note_final_v2.py`
+- `scripts/build_figure_contact_sheet_v2.py`
+- `scripts/record_figure_visual_review_v2.py`
+- `scripts/publish_note_final_v2.py`
+
+插图决策改变后必须重建 contact sheet 与视觉复核；任何 `reject` 资源都不能通过人工复核改写为
+`inserted`。正式发布只消费与笔记、manifest 和 decisions 哈希一致的通过产物。

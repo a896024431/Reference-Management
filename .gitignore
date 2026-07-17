@@ -66,6 +66,7 @@ storage/
 .trash/
 
 # Temporary outputs and caches.
+DeepPaperNote_output/
 tmp/
 *.tmp
 *.temp
@@ -79,3 +80,9 @@ node_modules/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# DeepPaperNote v2 tracked Vault/CI assets.
+!.github/
+!.github/workflows/
+!.github/workflows/deeppapernote-v2.yml
+!Research/*.base

@@ -78,38 +78,23 @@ Rules:
 - The `tags` field must always be present with at least one `papers/<domain>` tag.
 - `aliases` should be the paper's short name or acronym (e.g. "GPT-4", "LoRA"), not a paraphrase.
 
-## Figure Placeholder Style
+## Figures in Reader-Facing Notes
 
-Use this callout format as the default and preferred placeholder style:
+Use an image block only for an accepted, materialized figure or table. The permanent note must contain only the image and normal explanatory prose:
 
 ```md
-> [!figure] Fig. 3 数据分布与质量评估
-> 建议位置：数据与任务定义
-> 放置原因：这张图同时展示样本构成、对话长度统计和专家质检结果，是理解 `PsyInterview` 数据边界最重要的图之一。
-> 当前状态：保留占位；当前提取结果只拿到局部子图，无法稳定恢复成可独立解释的完整原图。
+![[Research/paper_title/images/fig-doc-example-p0003-fig-2.png|420]]
+*Fig. 2｜数据生成流程。它说明了为何这个处理步骤决定了后续结果的可比性。*
 ```
 
 Formatting rules:
-- keep the original paper numbering, for example `Fig. 3` or `Table 2`
-- keep a short human-readable label on the first line
-- always include `建议位置`
-- always include `放置原因`
-- always include `当前状态`
 
-`当前状态` should be explicit, for example:
-- `保留占位；未找到高置信度整图。`
-- `保留占位；当前只匹配到疑似局部子图，不足以稳定替换。`
-- `已替换为真实图片；当前插入的是论文原图的局部面板，不是完整复合图。`
+- Preserve the original paper numbering, for example `Fig. 3`, `Table 2`, `Fig. S2`, or `Extended Data Fig. 1`.
+- Keep the caption short, natural, and useful for reading the surrounding section.
+- Do not use `[!figure]`, visible placeholders, `建议位置`, `放置原因`, `当前状态`, internal HTML comments, candidate IDs, crop details, hashes, or QA language.
+- If an important visual cannot be inserted reliably, do not expose a placeholder. Store the decision and reason only in the run artifacts and keep the scientific explanation in prose.
 
-The structured `[FIGURE_PLACEHOLDER] ... [/FIGURE_PLACEHOLDER]` block is legacy/internal only.
-Do not use it in the final user-facing note unless you are debugging the pipeline.
-
-If a real image has been selected and materialized into the vault, prefer an Obsidian embed:
-
-```md
-![[Research/paper_title/images/page_003_img_01.png]]
-*论文原图编号：Fig. 2。数据生成流程图。这里插入是因为它最能帮助理解方法主线。*
-```
+The structured `[FIGURE_PLACEHOLDER] ... [/FIGURE_PLACEHOLDER]` block is legacy/internal only and is forbidden in permanent user-facing notes.
 
 ## Default Section Order
 

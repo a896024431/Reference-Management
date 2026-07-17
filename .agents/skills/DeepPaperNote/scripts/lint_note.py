@@ -7,7 +7,6 @@ import argparse
 import re
 from pathlib import Path
 
-
 REQUIRED_SECTIONS = [
     "核心信息",
     "原文摘要翻译",
@@ -93,7 +92,10 @@ def parser() -> argparse.ArgumentParser:
 
 
 def extract_headers(text: str) -> list[str]:
-    return [match.group(2).strip() for match in re.finditer(r"^(#{1,3})\s+(.+)$", text, flags=re.MULTILINE)]
+    return [
+        match.group(2).strip()
+        for match in re.finditer(r"^(#{1,3})\s+(.+)$", text, flags=re.MULTILINE)
+    ]
 
 
 def find_missing_sections(text: str) -> list[str]:
@@ -284,7 +286,6 @@ def mixed_language_issues(text: str) -> list[dict[str, object]]:
             continue
         stripped = line.strip()
         section_name = section_name_for_line(lines, idx - 1)
-        subsection_name = subsection_name_for_line(lines, idx - 1)
         if section_name in {"核心信息", "引用"}:
             continue
         if not re.search(r"[\u4e00-\u9fff]", stripped):
@@ -517,7 +518,10 @@ def suspicious_code_formatted_math(text: str) -> list[dict[str, object]]:
                 fence_lines = []
             else:
                 fence_text = "\n".join(fence_lines)
-                if re.search(r"(?:^|\\n)\s*(?:[A-Za-z][A-Za-z0-9_]*\s*=|O\(|\\sum|\\prod|\\mathcal|\\log|\\frac)", fence_text):
+                if re.search(
+                    r"(?:^|\\n)\s*(?:[A-Za-z][A-Za-z0-9_]*\s*=|O\(|\\sum|\\prod|\\mathcal|\\log|\\frac)",
+                    fence_text,
+                ):
                     issues.append(
                         {
                             "line_number": fence_start,
@@ -799,7 +803,9 @@ def mechanism_flow_warnings(text: str) -> list[str]:
         warnings.append("mechanism_flow_subsection_empty")
         return warnings
 
-    step_lines = [line.strip() for line in body.splitlines() if re.match(r"^\d+\.\s+", line.strip())]
+    step_lines = [
+        line.strip() for line in body.splitlines() if re.match(r"^\d+\.\s+", line.strip())
+    ]
     if not 3 <= len(step_lines) <= 4:
         warnings.append("mechanism_flow_step_count_unexpected")
 
@@ -873,7 +879,9 @@ def main() -> None:
         "code_math_issues": code_math_issues,
         "math_render_issues": math_issues,
         "figure_structure_issues": figure_issues,
-        "passes_basic_structure": not missing_sections and not {"title_heading_missing", "no_level2_sections", "front_matter_order_invalid"} & set(warnings),
+        "passes_basic_structure": not missing_sections
+        and not {"title_heading_missing", "no_level2_sections", "front_matter_order_invalid"}
+        & set(warnings),
         "passes_style_gate": not mixed_issues and not linebreak_issues and not code_math_issues,
         "passes_math_gate": not math_issues,
         "passes_figure_gate": not figure_issues,

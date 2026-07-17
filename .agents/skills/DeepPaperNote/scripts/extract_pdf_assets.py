@@ -20,7 +20,15 @@ import io
 import re
 from pathlib import Path
 
-from common import default_assets_dir, emit, enrich_metadata, fitz, maybe_load_json_record, normalize_whitespace, resolve_reference
+from common import (
+    default_assets_dir,
+    emit,
+    enrich_metadata,
+    fitz,
+    maybe_load_json_record,
+    normalize_whitespace,
+    resolve_reference,
+)
 
 try:
     from PIL import Image  # type: ignore
@@ -119,7 +127,14 @@ def _classify_visual_quality(
             reasons.append("oversized_page_crop")
         if visual_rect_count <= 1 and visual_body_ratio < 0.03:
             reasons.append("low_visual_body_ratio")
-        if any(code in reasons for code in ("large_text_block_suspected", "oversized_page_crop", "low_visual_body_ratio")):
+        if any(
+            code in reasons
+            for code in (
+                "large_text_block_suspected",
+                "oversized_page_crop",
+                "low_visual_body_ratio",
+            )
+        ):
             status = "reject"
         elif visual_rect_count == 0 or visual_body_ratio < 0.08:
             if "low_visual_body_ratio" not in reasons:
@@ -149,13 +164,27 @@ def _classify_caption_kind(label: str) -> str:
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__ or "extract pdf assets")
-    p.add_argument("--input", required=True, help="Fetch JSON path, metadata JSON path, JSON string, or raw paper reference.")
+    p.add_argument(
+        "--input",
+        required=True,
+        help="Fetch JSON path, metadata JSON path, JSON string, or raw paper reference.",
+    )
     p.add_argument("--output", default="", help="Output JSON path.")
     p.add_argument("--assets-dir", default="", help="Optional explicit assets directory.")
     p.add_argument("--max-pages", type=int, default=24, help="Maximum pages to scan.")
-    p.add_argument("--min-searchable-chars", type=int, default=100, help="Minimum characters for a page to count as searchable text.")
+    p.add_argument(
+        "--min-searchable-chars",
+        type=int,
+        default=100,
+        help="Minimum characters for a page to count as searchable text.",
+    )
     p.add_argument("--ocr-dpi", type=int, default=300, help="DPI used when OCR fallback is needed.")
-    p.add_argument("--figure-dpi", type=int, default=FIGURE_RENDER_DPI, help="DPI for figure-level page rendering.")
+    p.add_argument(
+        "--figure-dpi",
+        type=int,
+        default=FIGURE_RENDER_DPI,
+        help="DPI for figure-level page rendering.",
+    )
     return p
 
 
@@ -222,6 +251,7 @@ def extract_page_images(doc, page, page_number: int, images_dir: Path) -> list[d
 # Figure-level extraction: caption-anchored page-render cropping
 # ---------------------------------------------------------------------------
 
+
 def _find_caption_blocks(page) -> list[dict]:
     """Return caption anchors sorted top-to-bottom by their y0 coordinate.
 
@@ -260,7 +290,7 @@ def _find_caption_blocks(page) -> list[dict]:
             prev_line_bottom = first_bbox[3]
             line_height = max(first_bbox[3] - first_bbox[1], 6.0)
 
-            for cont_line in lines[line_idx + 1:]:
+            for cont_line in lines[line_idx + 1 :]:
                 cont_spans = cont_line.get("spans", [])
                 if not cont_spans:
                     break
@@ -283,12 +313,14 @@ def _find_caption_blocks(page) -> list[dict]:
                 caption_lines_text.append(cont_text)
 
             full_caption = " ".join(caption_lines_text)
-            anchors.append({
-                "label": label,
-                "kind": kind,
-                "bbox": (x0, y0, x1, y1),
-                "line_text": full_caption,
-            })
+            anchors.append(
+                {
+                    "label": label,
+                    "kind": kind,
+                    "bbox": (x0, y0, x1, y1),
+                    "line_text": full_caption,
+                }
+            )
     anchors.sort(key=lambda a: a["bbox"][1])
     return anchors
 
@@ -367,7 +399,9 @@ def _find_body_text_blocks(page) -> list[tuple[float, float, float, float, str]]
     return results
 
 
-def _find_paragraph_blocks(page, *, min_chars: int = 200) -> list[tuple[float, float, float, float, str]]:
+def _find_paragraph_blocks(
+    page, *, min_chars: int = 200
+) -> list[tuple[float, float, float, float, str]]:
     """Return only large prose blocks that look like running paragraphs.
 
     PyMuPDF often groups an entire tabular column ("DS-Ulysses 629.9 418.3 ...")
@@ -426,8 +460,7 @@ def _count_paragraph_text_chars_in_bbox(
 
         lines = block.get("lines", [])
         line_texts = [
-            "".join(s.get("text", "") for s in line.get("spans", [])).strip()
-            for line in lines
+            "".join(s.get("text", "") for s in line.get("spans", [])).strip() for line in lines
         ]
         line_texts = [text for text in line_texts if text]
         full_text = normalize_whitespace(" ".join(line_texts))
@@ -486,7 +519,9 @@ def _quality_signals_for_crop(
     caption_bbox = tuple(caption_anchor["bbox"])
     paragraph_text_chars = _count_paragraph_text_chars_in_bbox(page, bbox, caption_bbox)
     caption_text_chars = len(normalize_whitespace(str(caption_anchor.get("line_text", ""))))
-    other_caption_labels = _other_caption_labels_for_crop(caption_anchors or [], caption_anchor, bbox)
+    other_caption_labels = _other_caption_labels_for_crop(
+        caption_anchors or [], caption_anchor, bbox
+    )
     return _classify_visual_quality(
         kind=kind,
         page_coverage_ratio=page_coverage_ratio,
@@ -596,9 +631,7 @@ def _collect_text_lines(page) -> list[dict]:
     return lines_out
 
 
-def _cluster_lines_into_rows(
-    lines: list[dict], *, y_tolerance: float = 2.0
-) -> list[dict]:
+def _cluster_lines_into_rows(lines: list[dict], *, y_tolerance: float = 2.0) -> list[dict]:
     """Cluster sibling text lines that share roughly the same vertical band.
 
     PDFs created by LaTeX often emit one PyMuPDF "line" per cell, so a single
@@ -635,10 +668,12 @@ def _cluster_lines_into_rows(
                 placed = True
                 break
         if not placed:
-            rows.append({
-                "bbox": (bx0, by0, bx1, by1),
-                "members": [line],
-            })
+            rows.append(
+                {
+                    "bbox": (bx0, by0, bx1, by1),
+                    "members": [line],
+                }
+            )
 
     for row in rows:
         row["members"].sort(key=lambda m: m["bbox"][0])
@@ -707,11 +742,15 @@ def _grow_table_region(
     if direction == "down":
         candidates = [r for r in rows if r["bbox"][1] > caption_y1 + 0.5]
         candidates.sort(key=lambda r: r["bbox"][1])
-        boundary_check = lambda ly0, ly1: ly1 >= lower_bound
+
+        def boundary_check(ly0: float, ly1: float) -> bool:
+            return ly1 >= lower_bound
     else:
         candidates = [r for r in rows if r["bbox"][3] < caption_y0 - 0.5]
         candidates.sort(key=lambda r: r["bbox"][3], reverse=True)
-        boundary_check = lambda ly0, ly1: ly0 <= upper_bound
+
+        def boundary_check(ly0: float, ly1: float) -> bool:
+            return ly0 <= upper_bound
 
     for row in candidates:
         rx0, ry0, rx1, ry1 = row["bbox"]
@@ -785,7 +824,9 @@ def _estimate_table_bbox(
     next_anchor: dict | None,
     page_rect,
 ) -> tuple[float, float, float, float] | None:
-    result = _estimate_table_bbox_with_rows(page, caption_anchor, prev_anchor, next_anchor, page_rect)
+    result = _estimate_table_bbox_with_rows(
+        page, caption_anchor, prev_anchor, next_anchor, page_rect
+    )
     return result[0] if result is not None else None
 
 
@@ -815,7 +856,6 @@ def _estimate_table_bbox_with_rows(
     the same y-range, in case the paper places company-logo plots inside a
     table cell.
     """
-    caption_y0 = caption_anchor["bbox"][1]
     caption_y1 = caption_anchor["bbox"][3]
 
     upper_bound = page_rect.y0
@@ -898,7 +938,9 @@ def extract_figure_regions(
         bbox: tuple[float, float, float, float] | None
         table_body_rows = 0
         if kind == "table":
-            table_result = _estimate_table_bbox_with_rows(page, anchor, prev_anchor, next_anchor, page_rect)
+            table_result = _estimate_table_bbox_with_rows(
+                page, anchor, prev_anchor, next_anchor, page_rect
+            )
             if table_result is not None:
                 bbox, table_body_rows = table_result
             else:
@@ -974,7 +1016,11 @@ def main() -> None:
     if fitz is None:
         raise SystemExit("extract_pdf_assets.py requires PyMuPDF (`fitz`).")
 
-    asset_root = Path(args.assets_dir).expanduser().resolve() if args.assets_dir else default_assets_dir(record)
+    asset_root = (
+        Path(args.assets_dir).expanduser().resolve()
+        if args.assets_dir
+        else default_assets_dir(record)
+    )
     images_dir = asset_root / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 

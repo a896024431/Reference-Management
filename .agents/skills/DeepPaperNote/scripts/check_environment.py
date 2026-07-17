@@ -98,13 +98,19 @@ def main() -> None:
             "available": True,
             "current_working_directory": str(Path.cwd().resolve()),
             "workspace_output_dir": str(config.get("workspace_output_dir", "DeepPaperNote_output")),
-            "note": "If no Obsidian vault is configured, DeepPaperNote can still save notes under the current working directory.",
+            "note": (
+                "If no Obsidian vault is configured, DeepPaperNote can still save notes ",
+                "under the current working directory.",
+            ),
         },
         "zotero": {
             "local_hints": find_local_zotero_hints(),
             "mcp_available_from_script": False,
             "session_integration_checked_by_script": False,
-            "note": "Session-scoped library integrations must be checked by the active agent at runtime, not by this script.",
+            "note": (
+                "Session-scoped library integrations must be checked by the active agent ",
+                "at runtime, not by this script.",
+            ),
         },
         "ocr": {
             "tesseract_installed": bool(tesseract_path),
@@ -117,8 +123,10 @@ def main() -> None:
         "metadata": {
             "maintenance_utility": True,
             "semantic_scholar_api_key_configured": bool(
-                env_config_value("DEEPPAPERNOTE_SEMANTIC_SCHOLAR_API_KEY", "SEMANTIC_SCHOLAR_API_KEY")
-            )
+                env_config_value(
+                    "DEEPPAPERNOTE_SEMANTIC_SCHOLAR_API_KEY", "SEMANTIC_SCHOLAR_API_KEY"
+                )
+            ),
         },
     }
     emit(payload, args.output)

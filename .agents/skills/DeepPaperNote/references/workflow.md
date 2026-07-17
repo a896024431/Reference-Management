@@ -98,19 +98,20 @@ For a normal single-paper note request, the pipeline below is a required executi
    Completion condition:
    - page/image asset metadata is produced, or the failure is explicitly recorded
    Allowed on failure:
-   - continue with placeholder-first figure handling only if the failure is surfaced honestly
+   - continue with decision-first figure handling; record the unavailable asset in run artifacts, not in reader prose
    - do not silently skip this stage and then talk as if figure handling were complete
 
 6. `plan_figures`
-   Build a figure inventory and plan placeholders for all major figures/tables that matter to the note.
-   Placeholder-first rule:
-   - preserve the important figure/table structure even if images are missing
-   - only replace a placeholder when a real extracted image matches it with enough confidence
-   - keep the original paper numbering such as `Fig. 2` or `Table 1`
+   Build a figure inventory and make one `inserted`, `placeholder`, or `omitted` decision for every major figure/table that matters to the note.
+   Decision-first rule:
+   - preserve the scientific coverage even if images are unavailable
+   - insert a real image only when it matches with enough confidence and is visually usable
+   - preserve the original paper numbering such as `Fig. 2` or `Table 1` in an inserted caption
+   - keep target location, candidates, and reasons in the figure-decision artifact
    Completion condition:
-   - major figures/tables have a placeholder-or-replacement decision
+   - every major figure/table has a recorded decision
    Allowed on failure:
-   - keep placeholders and explain the limitation
+   - retain the decision and limitation in run artifacts; do not create a reader-visible placeholder
    - do not skip this stage just because image matching is slow or imperfect
 
 7. `build_synthesis_bundle`
@@ -127,7 +128,7 @@ For a normal single-paper note request, the pipeline below is a required executi
    - infer the paper type
    - decide which sections deserve the most weight
    - decide which sections need `###` subheadings
-   - select the most important numbers, comparisons, and figure/table placeholders
+   - select the most important numbers, comparisons, and figure/table evidence
    - add paper-specific subsections when the evidence supports them
    Recommended form:
    - a compact `<note_plan>...</note_plan>` block
@@ -191,8 +192,8 @@ For a normal single-paper note request, the pipeline below is a required executi
     - do not add domain/category directory layers unless the user explicitly asks
     - do not save directly into the bare `Research` root
     Complete the figure decision before this step:
-    - replace high-confidence placeholders with real images
-    - keep lower-confidence items as placeholders
+    - materialize only high-confidence images
+    - keep lower-confidence decisions in run artifacts without a visible note block
     - do not split text writing and figure handling into two separate user turns by default
     If the configured vault or its paper-local `images/` directory cannot currently be written:
     - immediately ask the user for permission escalation

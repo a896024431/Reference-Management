@@ -25,13 +25,19 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--content-file", default="", help="Path to the final Markdown content.")
     p.add_argument("--content", default="", help="Inline Markdown content.")
     p.add_argument("--stdin", action="store_true", help="Read Markdown content from stdin.")
-    p.add_argument("--lint-json", default="", help="Optional lint JSON path. Refuse write if structure, style, or math gate failed.")
+    p.add_argument(
+        "--lint-json",
+        default="",
+        help="Optional lint JSON path. Refuse write if structure, style, or math gate failed.",
+    )
     p.add_argument("--title", default="", help="Explicit title override.")
     p.add_argument("--output", default="", help="JSON status output path.")
     p.add_argument("--vault", default="", help="Target Obsidian vault path.")
     p.add_argument("--subdir", default="", help="Vault-relative subdirectory.")
     p.add_argument("--filename", default="", help="Explicit note filename.")
-    p.add_argument("--asset-subdir", default="images", help="Asset folder name relative to the note directory.")
+    p.add_argument(
+        "--asset-subdir", default="images", help="Asset folder name relative to the note directory."
+    )
     p.add_argument("--paper-id", default="", help="Canonical paper id.")
     return p
 
@@ -47,13 +53,21 @@ def main() -> None:
     if args.lint_json:
         lint = json.loads(Path(args.lint_json).expanduser().resolve().read_text(encoding="utf-8"))
         if not lint.get("passes_basic_structure", False):
-            raise SystemExit("write_obsidian_note.py refused to write note because basic structure lint failed.")
+            raise SystemExit(
+                "write_obsidian_note.py refused to write note because basic structure lint failed."
+            )
         if not lint.get("passes_style_gate", False):
-            raise SystemExit("write_obsidian_note.py refused to write note because style gate failed.")
+            raise SystemExit(
+                "write_obsidian_note.py refused to write note because style gate failed."
+            )
         if not lint.get("passes_math_gate", False):
-            raise SystemExit("write_obsidian_note.py refused to write note because math gate failed.")
+            raise SystemExit(
+                "write_obsidian_note.py refused to write note because math gate failed."
+            )
         if "passes_figure_gate" in lint and not lint.get("passes_figure_gate", False):
-            raise SystemExit("write_obsidian_note.py refused to write note because figure gate failed.")
+            raise SystemExit(
+                "write_obsidian_note.py refused to write note because figure gate failed."
+            )
 
     if args.content_file:
         note_text = Path(args.content_file).expanduser().resolve().read_text(encoding="utf-8")

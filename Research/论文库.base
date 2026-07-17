@@ -1,0 +1,73 @@
+filters:
+  and:
+    - file.inFolder("Research")
+    - file.name == "笔记"
+    - type == "paper"
+properties:
+  title_zh:
+    displayName: 中文题名
+  title:
+    displayName: 英文题名
+  authors:
+    displayName: 作者
+  year:
+    displayName: 年份
+  venue:
+    displayName: 期刊／会议
+  domain:
+    displayName: 领域
+  topics:
+    displayName: 主题
+  paper_type:
+    displayName: 论文类型
+  evidence_level:
+    displayName: 证据等级
+  note_status:
+    displayName: 笔记状态
+  figure_status:
+    displayName: 插图状态
+views:
+  - type: table
+    name: 全部论文
+    order:
+      - title_zh
+      - authors
+      - year
+      - venue
+      - topics
+      - evidence_level
+      - note_status
+      - figure_status
+  - type: table
+    name: 待补图
+    filters:
+      or:
+        - figure_status == "partial"
+        - figure_status == "placeholder_only"
+    order:
+      - title_zh
+      - figure_status
+      - topics
+      - note_status
+  - type: table
+    name: 待复核
+    filters:
+      or:
+        - note_status == "draft"
+        - note_status == "reviewed"
+        - note_status == "degraded"
+    order:
+      - title_zh
+      - note_status
+      - evidence_level
+      - figure_status
+  - type: table
+    name: 按主题
+    groupBy:
+      property: topics
+      direction: ASC
+    order:
+      - topics
+      - title_zh
+      - year
+      - note_status

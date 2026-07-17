@@ -12,13 +12,23 @@
 [![License](https://img.shields.io/badge/license-MIT-c9a227)](./LICENSE)
 [![Agents](https://img.shields.io/badge/agents-Claude%20Code%20%2B%20Codex-7c3aed)](./SKILL.md)
 [![Output](https://img.shields.io/badge/output-Obsidian-16a34a)](./references/obsidian-format.md)
-[![Figures](https://img.shields.io/badge/figures-placeholder--first-f59e0b)](./references/figure-placement.md)
+[![Figures](https://img.shields.io/badge/figures-reader--clean-f59e0b)](./references/figure-placement.md)
 [![Writing](https://img.shields.io/badge/writing-model--first-7c3aed)](./references/model-synthesis.md)
 [![Changelog](https://img.shields.io/badge/changelog-latest-0f766e)](./CHANGELOG.md)
 
 </div>
 
 [![DeepPaperNote Hero](./assets/hero-academic.svg)](https://917dhj.github.io/DeepPaperNote/)
+
+
+> [!important] Repository overlay (schema v2)
+> In this Vault, canonical output is fixed to `Research/<paper title>/笔记.md` with
+> an `images/` directory. Run artifacts live only under
+> `.local/deeppapernote/runs/<run_id>/`; historical `Research/Papers` and `tmp/`
+> examples below are legacy compatibility notes, not publication targets. Zotero or
+> infiniCloud is an optional provider, and availability belongs in the run manifest,
+> never in the permanent note. See `SKILL.md`, `references/v2-workflow.md`, and
+> `references/vault-v2.md` for the binding workflow.
 
 **Do you often run into this situation: you want to study a classic paper carefully, but the hardest part is no longer reading it — it is turning that reading into usable notes?** The real time sink usually looks like this:
 
@@ -46,7 +56,7 @@ DeepPaperNote is a skill for **deep paper reading**. The same core skill can be 
 | 🎯 Your need / pain point | ✅ What DeepPaperNote does |
 | --- | --- |
 | You want to understand a complex paper faster | It organizes the method backbone, key results, figure context, and limitations into a note you can actually read through |
-| You want to study a classic paper without handwriting a pile of mechanical notes | It handles metadata collection, structure building, figure placeholders, and full note generation so you can spend your energy on understanding |
+| You want to study a classic paper without handwriting a pile of mechanical notes | It handles metadata collection, structure building, traceable figure decisions, and full note generation so you can spend your energy on understanding |
 | You want the paper to live inside Obsidian as a long-term asset | It files the paper into a domain-appropriate place inside your Obsidian knowledge base, then creates a paper-specific folder, Markdown note, and local `images/` directory |
 | You already manage papers in Zotero and do not want to redo the work | It can prefer local records and attachments, reducing mismatches and often speeding the workflow up |
 | You do not want another polished-looking summary | It leans toward mechanism breakdown, key numbers, formulas, edge cases, and honest limitations |
@@ -64,7 +74,7 @@ DeepPaperNote does not achieve higher note quality by simply rewriting the abstr
 | 🤖 Model-led understanding | The model is responsible for mechanism breakdown, method structure, key comparisons, and limitations instead of template-like summary writing. |
 | 🗂️ Evidence first | It gathers evidence from PDFs, metadata sources, and optional Zotero workflows before writing, instead of producing claims first and looking for support later. |
 | 🧪 Technical detail first | For technical papers, it tries to preserve key numbers, formulas, implementation logic, and real boundary conditions rather than stopping at high-level paraphrase. |
-| 🖼️ Placeholder-first figures | When image extraction is unstable, it still keeps figure position, explanation, and context so the note structure does not break. |
+| Reader-clean figures | It records every important visual decision, but shows readers only reliable images with natural captions. |
 | 🔗 Native knowledge-base output | It first routes the paper into a domain-appropriate place in your existing knowledge-base structure, then gives each paper its own folder, Markdown note, and `images/` directory. |
 | 📚 Local-library-first resolution | If the paper already exists in Zotero, it can reuse local items and attachments, which is often both more reliable and faster. |
 
@@ -165,7 +175,7 @@ By default, DeepPaperNote will:
 
 - resolve the paper identity
 - gather metadata and PDF evidence
-- plan figure placeholders and attempt high-confidence figure replacement
+- make traceable figure decisions and attempt high-confidence image insertion
 - generate the final Markdown note
 - save it into Obsidian when configured, or ask for your vault path before falling back to the current directory
 
@@ -414,30 +424,22 @@ Related docs:
 - [Architecture](./references/architecture.md)
 - [Model Synthesis](./references/model-synthesis.md)
 
-## 🖼️ Figure Strategy
+## Figure Strategy
 
-When figure handling breaks down, the quality of the whole note usually drops with it.
+DeepPaperNote reviews every important visual, but it keeps the review process out of the published note.
 
-That is why DeepPaperNote uses a more structure-first, placeholder-first figure strategy:
+- reliable figures appear as a local Obsidian embed with a short, natural caption;
+- unavailable or low-quality figures remain traceable decisions in the run artifacts;
+- readers never see candidate files, crop notes, placement instructions, review status, or artificial placeholders.
 
-- keep the semantic place of important figures inside the note
-- avoid breaking the reading flow when extraction is incomplete
-- show which figure belonged there and why it matters, so you can later revisit the paper and add the image yourself if needed
-
-Recommended placeholder format:
+For example:
 
 ```md
-> [!figure] Fig. 3 Data Distribution and Quality Evaluation
-> Suggested location: Data and task definition
-> Why here: This figure combines sample composition, conversation-length statistics, and expert quality checks, making it one of the most important figures for understanding the data boundaries.
-> Current status: Placeholder kept; current extraction only recovered partial subpanels and cannot yet reconstruct the full original figure reliably.
+![[images/fig-doc-example-p0003-fig-2.png|420]]
+*Fig. 2: Device geometry and measurement loop. It explains why the two edge channels can be tuned independently.*
 ```
 
-In other words, DeepPaperNote prioritizes:
-
-> note completeness and readability over forcing every figure to be extracted automatically at any cost
-
-See [figure placement rules](./references/figure-placement.md).
+The goal is a note that stays readable even when no trustworthy image can be published. See [figure placement rules](./references/figure-placement.md).
 
 ## ✅ Quality Bar
 

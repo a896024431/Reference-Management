@@ -198,41 +198,28 @@ Allowed line breaks:
 - between paragraphs
 - bullet lists
 - block quotes
-- figure callouts
+- figure embeds and captions
 - fenced code or formula blocks
 
-## Figure Placeholders
+## Figures in the Final Note
 
-Start from placeholders, not from extracted images.
-The note should preserve the full figure/table structure even when image extraction is partial.
+Plan and review important visuals before publication, but keep that workflow in the run artifacts. A permanent note is a research note, not an image-extraction report.
 
 If the bundle contains candidate figure pages or candidate image files:
-- use them as evidence for semantic matching
-- prefer the candidate with the strongest caption/page-context agreement
-- treat identity match and visual usability as separate gates
-- never treat a matching label or caption as sufficient approval to insert an image
-- reject caption-only crops, missing table bodies, table crops contaminated by running prose or another Figure/Table caption, large text/title/abstract crops, and crops with very low visual body ratio
-- if visual quality is missing, ambiguous, or failed, keep the placeholder
-- still make the final decision yourself rather than trusting the candidate ranking blindly
+
+- use captions, page context, and nearby discussion to determine the visual's scientific role;
+- require both an identity match and usable visual content before insertion;
+- reject caption-only crops, text-dominated pages, incomplete composite figures that would mislead, unreadable result plots, and table crops without a usable body;
+- record every important visual as `inserted`, `placeholder`, or `omitted` in `figure_decisions.json`.
 
 Final-note figure rules:
-- keep the original paper numbering, such as `Fig. 1`, `Fig. 3`, `Table 2`
-- do not rename them to `图 1`, `图 2` just because of note order
-- if you replace a placeholder with a real image, keep the same paper figure id in the caption
-- if you replace a placeholder with a real image, prefer the `obsidian_embed` returned by `scripts/materialize_figure_asset.py`
-- if an important figure cannot be confidently extracted, keep a placeholder with a short explanation
-- every kept placeholder must appear directly under its most relevant analytical section; do not create catch-all sections such as `剩余图表占位`, `未放置图表`, `Remaining figures`, or `Leftover figures`
-- every kept placeholder must use the standard `[!figure]` callout format; never use ordinary paragraph markers such as `[图表占位 | Fig. 1]`, `图表占位：Table 2`, or `Figure Placeholder | Fig. 3`
-- `reject_visual_quality` means the candidate image is unsafe to insert, not that the final note must keep a placeholder for that rejected candidate
-- for survey papers, summarize repetitive representative-work figures or appendix tables in prose when they do not materially help the reader as standalone callouts
-- text may be complete even when figures are partial; do not let missing images erase textual coverage
-- complete the figure decision inside the same task as the note generation
-- do not stop after the text draft and ask the user whether to continue with figures unless they explicitly asked for a staged workflow
-- prefer a stable figure callout format in the final note:
-  - `> [!figure] Fig. 3 ...`
-  - `> 建议位置：...`
-  - `> 放置原因：...`
-  - `> 当前状态：...`
+
+- An `inserted` visual is a direct Obsidian embed plus, where useful, a concise natural caption explaining its scientific role.
+- Preserve original labels such as `Fig. 1`, `Table 2`, `Fig. S2`, or `Extended Data Fig. 1`; never renumber by note order.
+- A `placeholder` or `omitted` decision must not create any reader-visible placeholder, status, callout, or extraction explanation. Its reason stays in the run artifact.
+- Never publish `[!figure]`, `建议位置`, `放置原因`, `当前状态`, candidate/reject identifiers, crop details, hashes, or visual-QA language in a note.
+- Text may be complete even when images are partial. Do not use a weak crop merely to make the note look more complete.
+- Complete the decision inside the same task as note generation; do not stop after a text draft just to ask whether figures should be considered.
 
 ## Final Self-Review
 

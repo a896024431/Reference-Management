@@ -64,7 +64,9 @@ def main() -> None:
         "abstract": normalize_whitespace(args.abstract),
         "source_type": normalize_whitespace(args.source_type)
         or ("zotero_seed" if normalize_whitespace(args.zotero_key) else "seed_record"),
-        "metadata_sources": ["zotero_seed"] if normalize_whitespace(args.zotero_key) else ["seed_record"],
+        "metadata_sources": ["zotero_seed"]
+        if normalize_whitespace(args.zotero_key)
+        else ["seed_record"],
     }
     record["paper_id"] = paper_id_for_record(record)
     emit(record, args.output)

@@ -197,4 +197,7 @@ def test_missing_quality_signals_need_visual_check_and_keep_placeholder_mode() -
 
     assert planned[0]["insert_mode"] == "placeholder"
     assert planned[0]["figure_asset_candidate"]["candidate_status"] == "needs_visual_quality_check"
-    assert planned[0]["candidate_pages"][0]["figure_assets"][0]["candidate_status"] == "needs_visual_quality_check"
+    assert (
+        planned[0]["candidate_pages"][0]["figure_assets"][0]["candidate_status"]
+        == "needs_visual_quality_check"
+    )

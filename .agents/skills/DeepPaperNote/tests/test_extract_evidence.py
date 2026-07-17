@@ -1,3 +1,5 @@
+# ruff: noqa: E501
+# Long literals intentionally mirror evidence fixtures.
 from __future__ import annotations
 
 import json
@@ -6,7 +8,6 @@ import sys
 from pathlib import Path
 
 from build_synthesis_bundle import bundle
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXTRACT_EVIDENCE_SCRIPT = PROJECT_ROOT / "scripts" / "extract_evidence.py"
@@ -27,7 +28,14 @@ def test_extract_evidence_outputs_ablation_evidence(tmp_path: Path) -> None:
     input_path.write_text(json.dumps(input_payload, ensure_ascii=False), encoding="utf-8")
 
     result = subprocess.run(
-        [sys.executable, str(EXTRACT_EVIDENCE_SCRIPT), "--input", str(input_path), "--output", str(output_path)],
+        [
+            sys.executable,
+            str(EXTRACT_EVIDENCE_SCRIPT),
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -63,7 +71,7 @@ def test_bundle_exposes_ablation_evidence_and_new_contract_rules() -> None:
                         "source_section": "experiment",
                         "page_hint": "p.8",
                     }
-                ]
+                ],
             },
             "summary": {"ablation_signals": ["Removing the decoder causes a 2-point drop."]},
         },
@@ -138,8 +146,9 @@ def test_bundle_exposes_sanitized_figure_asset_quality_and_hard_gate_rules() -> 
     assert "caption-only" in figure_rules_text
     assert "missing table body" in figure_rules_text
     assert "low visual body ratio" in figure_rules_text
-    assert "directly under the most relevant analytical section" in figure_rules_text
+    assert "`inserted`、`placeholder` 或 `omitted`" in figure_rules_text
     assert "reject_visual_quality" in figure_rules_text
-    assert "catch-all sections" in figure_rules_text
+    assert "reader-visible placeholder" in figure_rules_text
+    assert "正式笔记不得出现" in figure_rules_text
     assert "[!figure]" in figure_rules_text
-    assert "[图表占位 |" in figure_rules_text
+    assert "建议位置" in figure_rules_text

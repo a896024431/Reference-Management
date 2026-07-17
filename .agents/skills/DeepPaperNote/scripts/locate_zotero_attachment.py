@@ -8,7 +8,6 @@ from pathlib import Path
 
 from common import emit, normalize_whitespace
 
-
 DEFAULT_STORAGE_ROOTS = [
     "~/Zotero/storage",
     "~/Library/Application Support/Zotero/storage",
@@ -45,11 +44,7 @@ def choose_pdf_file(directory: Path, filename_hint: str) -> Path | None:
         if candidate.exists() and candidate.is_file():
             return candidate
     pdfs = sorted(
-        [
-            path
-            for path in directory.iterdir()
-            if path.is_file() and path.suffix.lower() == ".pdf"
-        ]
+        [path for path in directory.iterdir() if path.is_file() and path.suffix.lower() == ".pdf"]
     )
     if len(pdfs) == 1:
         return pdfs[0]
@@ -61,7 +56,9 @@ def choose_pdf_file(directory: Path, filename_hint: str) -> Path | None:
     return pdfs[0] if pdfs else None
 
 
-def locate_attachment(attachment_key: str, filename: str, storage_roots: list[Path]) -> tuple[Path | None, Path | None]:
+def locate_attachment(
+    attachment_key: str, filename: str, storage_roots: list[Path]
+) -> tuple[Path | None, Path | None]:
     filename = normalize_whitespace(filename)
     if attachment_key:
         for root in storage_roots:

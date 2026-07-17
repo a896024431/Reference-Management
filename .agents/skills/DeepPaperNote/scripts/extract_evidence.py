@@ -30,11 +30,20 @@ from contracts import empty_evidence_pack
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__ or "extract evidence")
-    p.add_argument("--input", required=True, help="Metadata JSON path, fetch_pdf JSON path, JSON string, or raw paper reference.")
+    p.add_argument(
+        "--input",
+        required=True,
+        help="Metadata JSON path, fetch_pdf JSON path, JSON string, or raw paper reference.",
+    )
     p.add_argument("--output", default="", help="Output JSON path.")
     p.add_argument("--paper-id", default="", help="Canonical paper id if already known.")
     p.add_argument("--max-pages", type=int, default=18, help="Maximum number of PDF pages to scan.")
-    p.add_argument("--max-chunks-per-section", type=int, default=12, help="Maximum number of candidate chunks to keep per section.")
+    p.add_argument(
+        "--max-chunks-per-section",
+        type=int,
+        default=12,
+        help="Maximum number of candidate chunks to keep per section.",
+    )
     return p
 
 
@@ -113,9 +122,17 @@ def first_chunks(chunks: list[dict], limit: int) -> list[dict]:
     ]
 
 
-def keyword_chunks(text: str, keywords: list[str], *, section: str, max_chunks: int = 6) -> list[dict]:
+def keyword_chunks(
+    text: str, keywords: list[str], *, section: str, max_chunks: int = 6
+) -> list[dict]:
     picked = pick_sentences_by_keywords(text, keywords, limit=max_chunks)
-    return text_chunks(" ".join(picked), section=section, kind_hint=section, max_chunks=max_chunks, sentences_per_chunk=1)
+    return text_chunks(
+        " ".join(picked),
+        section=section,
+        kind_hint=section,
+        max_chunks=max_chunks,
+        sentences_per_chunk=1,
+    )
 
 
 def candidate_map(
@@ -128,19 +145,51 @@ def candidate_map(
     data_text: str,
     max_chunks_per_section: int,
 ) -> dict[str, list[dict]]:
-    combined_general = " ".join(part for part in [abstract, intro_text, method_text, experiment_text, conclusion_text] if part)
+    combined_general = " ".join(
+        part
+        for part in [abstract, intro_text, method_text, experiment_text, conclusion_text]
+        if part
+    )
     return {
-        "abstract": text_chunks(abstract, section="abstract", kind_hint="abstract", max_chunks=max_chunks_per_section),
-        "introduction": text_chunks(intro_text, section="introduction", kind_hint="problem", max_chunks=max_chunks_per_section),
-        "method": text_chunks(method_text, section="method", kind_hint="method", max_chunks=max_chunks_per_section),
-        "experiment": text_chunks(experiment_text, section="experiment", kind_hint="results", max_chunks=max_chunks_per_section),
-        "conclusion": text_chunks(conclusion_text, section="conclusion", kind_hint="limitations", max_chunks=max_chunks_per_section),
-        "data": text_chunks(data_text, section="data", kind_hint="data", max_chunks=max_chunks_per_section),
-        "general": text_chunks(combined_general, section="general", kind_hint="general", max_chunks=max_chunks_per_section),
+        "abstract": text_chunks(
+            abstract, section="abstract", kind_hint="abstract", max_chunks=max_chunks_per_section
+        ),
+        "introduction": text_chunks(
+            intro_text,
+            section="introduction",
+            kind_hint="problem",
+            max_chunks=max_chunks_per_section,
+        ),
+        "method": text_chunks(
+            method_text, section="method", kind_hint="method", max_chunks=max_chunks_per_section
+        ),
+        "experiment": text_chunks(
+            experiment_text,
+            section="experiment",
+            kind_hint="results",
+            max_chunks=max_chunks_per_section,
+        ),
+        "conclusion": text_chunks(
+            conclusion_text,
+            section="conclusion",
+            kind_hint="limitations",
+            max_chunks=max_chunks_per_section,
+        ),
+        "data": text_chunks(
+            data_text, section="data", kind_hint="data", max_chunks=max_chunks_per_section
+        ),
+        "general": text_chunks(
+            combined_general,
+            section="general",
+            kind_hint="general",
+            max_chunks=max_chunks_per_section,
+        ),
     }
 
 
-def extract_equation_candidates(*, full_text: str, method_text: str, experiment_text: str, conclusion_text: str, limit: int = 8) -> list[dict]:
+def extract_equation_candidates(
+    *, full_text: str, method_text: str, experiment_text: str, conclusion_text: str, limit: int = 8
+) -> list[dict]:
     candidates: list[dict] = []
     seen = set()
 
@@ -163,7 +212,11 @@ def extract_equation_candidates(*, full_text: str, method_text: str, experiment_
     math_like_patterns = [
         (r"O\([^)]*\)", "method", "complexity"),
         (r"\bp\([^)]*\)\s*=\s*[^.]{1,120}", "method", "objective"),
-        (r"\b(?:L|Loss|Err|ELBO|FID|IS|NLL)[A-Za-z0-9_]*\s*=\s*[^.]{1,120}", "experiment", "metric_equation"),
+        (
+            r"\b(?:L|Loss|Err|ELBO|FID|IS|NLL)[A-Za-z0-9_]*\s*=\s*[^.]{1,120}",
+            "experiment",
+            "metric_equation",
+        ),
         (r"[A-Za-z][A-Za-z0-9_]*\s*=\s*\([^)]*\)\s*\^[^\s,.;]+", "experiment", "scaling_law"),
         (r"[A-Za-z][A-Za-z0-9_]*\s*=\s*[^.]{1,100}", "method", "equation"),
     ]
@@ -247,19 +300,34 @@ def main() -> None:
     else:
         extraction_failures.append("pdf_missing")
 
-    paper_type, paper_type_rationale = infer_paper_type(record.get("title", ""), record.get("abstract", ""))
+    paper_type, paper_type_rationale = infer_paper_type(
+        record.get("title", ""), record.get("abstract", "")
+    )
 
     abstract = normalize_whitespace(str(record.get("abstract", "")).strip())
     intro_text = section_map.get("introduction", "") or abstract
     method_text = section_map.get("method", "") or abstract
-    experiment_text = section_map.get("experiment", "") or section_map.get("conclusion", "") or abstract
+    experiment_text = (
+        section_map.get("experiment", "") or section_map.get("conclusion", "") or abstract
+    )
     conclusion_text = section_map.get("conclusion", "") or abstract
     figure_captions = extract_caption_lines(full_text, "figure")[:12] if full_text else []
     mechanism_caption_text = " ".join(
         item.get("caption", "")
         for item in figure_captions
         if isinstance(item, dict)
-        and any(token in str(item.get("caption", "")).lower() for token in ["pipeline", "framework", "overview", "architecture", "system", "workflow", "stage"])
+        and any(
+            token in str(item.get("caption", "")).lower()
+            for token in [
+                "pipeline",
+                "framework",
+                "overview",
+                "architecture",
+                "system",
+                "workflow",
+                "stage",
+            ]
+        )
     )
     data_text = " ".join(
         part
@@ -282,36 +350,99 @@ def main() -> None:
         max_chunks_per_section=args.max_chunks_per_section,
     )
 
-    problem_sentences = pick_sentences_by_keywords(
-        intro_text or abstract,
-        ["we address", "we investigate", "we study", "challenge", "problem", "aim", "objective", "however"],
-        limit=4,
-    ) or split_sentences(intro_text or abstract)[:3]
+    problem_sentences = (
+        pick_sentences_by_keywords(
+            intro_text or abstract,
+            [
+                "we address",
+                "we investigate",
+                "we study",
+                "challenge",
+                "problem",
+                "aim",
+                "objective",
+                "however",
+            ],
+            limit=4,
+        )
+        or split_sentences(intro_text or abstract)[:3]
+    )
     task_sentences = pick_sentences_by_keywords(
         " ".join([abstract, intro_text, method_text]),
-        ["task", "predict", "classification", "identify", "detect", "estimate", "evaluate", "diagnos", "screen"],
+        [
+            "task",
+            "predict",
+            "classification",
+            "identify",
+            "detect",
+            "estimate",
+            "evaluate",
+            "diagnos",
+            "screen",
+        ],
         limit=5,
     ) or [chunk["text"] for chunk in candidates.get("introduction", [])[:3]]
     data_sentences = pick_sentences_by_keywords(
         data_text,
-        ["dataset", "datasets", "participants", "patients", "outpatients", "interviews", "corpus", "recordings", "collected"],
+        [
+            "dataset",
+            "datasets",
+            "participants",
+            "patients",
+            "outpatients",
+            "interviews",
+            "corpus",
+            "recordings",
+            "collected",
+        ],
         limit=5,
     ) or [chunk["text"] for chunk in candidates.get("data", [])[:3]]
     method_sentences = pick_sentences_by_keywords(
         method_text,
-        ["we propose", "we present", "we introduce", "framework", "pipeline", "model", "method", "feature", "classifier", "fine-tun", "zero-shot"],
+        [
+            "we propose",
+            "we present",
+            "we introduce",
+            "framework",
+            "pipeline",
+            "model",
+            "method",
+            "feature",
+            "classifier",
+            "fine-tun",
+            "zero-shot",
+        ],
         limit=6,
     ) or [chunk["text"] for chunk in candidates.get("method", [])[:4]]
-    mechanism_sentences = extract_mechanism_flow_sentences(
-        " ".join(part for part in [method_text, mechanism_caption_text] if part),
-        limit=6,
-    ) or method_sentences[:4]
-    result_sentences = extract_metric_claims(experiment_text) or pick_sentences_by_keywords(
-        experiment_text,
-        ["outperform", "improve", "accuracy", "f1", "auc", "auprc", "score", "results show", "achieved"],
-        limit=6,
-    ) or [chunk["text"] for chunk in candidates.get("experiment", [])[:4]]
-    ablation_sentences = extract_negative_claims(" ".join(part for part in [experiment_text, conclusion_text] if part), limit=6)
+    mechanism_sentences = (
+        extract_mechanism_flow_sentences(
+            " ".join(part for part in [method_text, mechanism_caption_text] if part),
+            limit=6,
+        )
+        or method_sentences[:4]
+    )
+    result_sentences = (
+        extract_metric_claims(experiment_text)
+        or pick_sentences_by_keywords(
+            experiment_text,
+            [
+                "outperform",
+                "improve",
+                "accuracy",
+                "f1",
+                "auc",
+                "auprc",
+                "score",
+                "results show",
+                "achieved",
+            ],
+            limit=6,
+        )
+        or [chunk["text"] for chunk in candidates.get("experiment", [])[:4]]
+    )
+    ablation_sentences = extract_negative_claims(
+        " ".join(part for part in [experiment_text, conclusion_text] if part), limit=6
+    )
     limitation_sentences = pick_sentences_by_keywords(
         conclusion_text,
         ["limitation", "future work", "however", "remain", "generaliz", "need", "further"],

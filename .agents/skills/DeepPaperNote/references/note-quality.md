@@ -73,7 +73,7 @@ Fail closed if any of these are missing:
 Also fail closed if:
 - the final Chinese note still contains mixed-language prose lines
 - English remains in full clauses rather than only stable proper nouns, model names, venues, URLs, or DOIs
-- figure placeholders include untranslated caption sentences that read like raw extraction rather than note prose
+- figure captions or surrounding prose read like raw extraction or pipeline status rather than natural note writing
 
 Strong notes should also clearly contain:
 - the most important numbers
