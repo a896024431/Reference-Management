@@ -15,7 +15,7 @@ import unicodedata
 import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 SCHEMA_VERSION = "2.0"
@@ -96,6 +96,7 @@ WIKILINK_RE = re.compile(r"(!?)\[\[([^\]]+)\]\]")
 MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 TAG_RE = re.compile(r"^papers(?:/[a-z0-9][a-z0-9-]*)+$")
 YEAR_RE = re.compile(r"^(?:18|19|20|21)\d{2}$")
+LOCAL_PDF_LIBRARY_ROOT = "\u6587\u732e"
 
 BASE_REQUIRED_VIEWS = (
     "\u5168\u90e8\u8bba\u6587",
@@ -630,6 +631,20 @@ def extract_wikilinks(text: str) -> list[WikiLink]:
     return links
 
 
+def is_local_pdf_library_link(link: WikiLink) -> bool:
+    """Return whether a non-embedded link targets the local-only PDF library."""
+    if link.embedded:
+        return False
+    target = re.split(r"[#^]", link.target, maxsplit=1)[0].strip()
+    normalized = urllib.parse.unquote(target).replace("\\", "/").lstrip("/")
+    path = PurePosixPath(normalized)
+    return (
+        len(path.parts) >= 2
+        and path.parts[0] == LOCAL_PDF_LIBRARY_ROOT
+        and path.suffix.casefold() == ".pdf"
+    )
+
+
 def _path_candidates(target: str, source_path: Path, vault_root: Path) -> list[Path]:
     target = urllib.parse.unquote(target).replace("\\", "/").lstrip("/")
     if not target:
@@ -782,6 +797,7 @@ def _collect_document_links(
     note_index: Mapping[str, list[NoteRecord]],
     issues: list[VaultIssue],
     referenced_images: set[str],
+    allow_missing_local_pdfs: bool,
 ) -> set[str]:
     resolved_notes: set[str] = set()
     source_relative = source_path.relative_to(vault_root).as_posix()
@@ -793,6 +809,8 @@ def _collect_document_links(
             note_index=note_index,
         )
         if resolution.status == "missing":
+            if allow_missing_local_pdfs and is_local_pdf_library_link(link):
+                continue
             _issue(
                 issues,
                 "wikilink_broken",
@@ -901,7 +919,7 @@ def _validate_base_file(path: Path, vault_root: Path, issues: list[VaultIssue]) 
         )
 
 
-def lint_vault(vault_root: Path) -> dict[str, Any]:
+def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> dict[str, Any]:
     vault_root = vault_root.expanduser().resolve()
     records = discover_notes(vault_root)
     note_index = build_note_index(records)
@@ -986,6 +1004,7 @@ def lint_vault(vault_root: Path) -> dict[str, Any]:
             note_index=note_index,
             issues=issues,
             referenced_images=referenced_images,
+            allow_missing_local_pdfs=allow_missing_local_pdfs,
         )
 
     # Collisions are warnings until an actual link resolves ambiguously.
@@ -1019,6 +1038,7 @@ def lint_vault(vault_root: Path) -> dict[str, Any]:
             note_index=note_index,
             issues=issues,
             referenced_images=referenced_images,
+            allow_missing_local_pdfs=allow_missing_local_pdfs,
         )
         missing_from_navigation = sorted(note_paths - navigation_note_paths)
         for missing in missing_from_navigation:

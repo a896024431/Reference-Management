@@ -15,6 +15,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--vault", default=".", help="Obsidian vault root (default: current directory).")
     p.add_argument("--output", default="", help="Optional JSON report path.")
     p.add_argument(
+        "--allow-missing-local-pdfs",
+        action="store_true",
+        help="Allow missing non-embedded local-library PDF links for a PDF-free CI checkout.",
+    )
+    p.add_argument(
         "--no-fail",
         action="store_true",
         help="Always exit zero; useful for migration audits while preserving report status.",
@@ -24,7 +29,9 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = parser().parse_args()
-    report = lint_vault(Path(args.vault))
+    report = lint_vault(
+        Path(args.vault), allow_missing_local_pdfs=args.allow_missing_local_pdfs
+    )
     serialized = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         output = Path(args.output).expanduser().resolve()

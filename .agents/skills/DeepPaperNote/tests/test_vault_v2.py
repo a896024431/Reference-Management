@@ -224,6 +224,31 @@ class VaultLintTests(unittest.TestCase):
             self.assertIn("wikilink_broken", codes)
             self.assertIn("note_missing_from_navigation", codes)
 
+    def test_ci_mode_allows_only_missing_local_pdf_library_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            note_path = build_vault(root)
+            local_pdf_target = "\u6587\u732e/1/local-only.pdf"
+            note_path.write_text(
+                note_path.read_text(encoding="utf-8")
+                + f"\n[[{local_pdf_target}|Local PDF]]\n[[Missing Paper]]\n",
+                encoding="utf-8",
+            )
+
+            strict_targets = {
+                issue["details"].get("target")
+                for issue in lint_vault(root)["issues"]
+                if issue["code"] == "wikilink_broken"
+            }
+            ci_targets = {
+                issue["details"].get("target")
+                for issue in lint_vault(root, allow_missing_local_pdfs=True)["issues"]
+                if issue["code"] == "wikilink_broken"
+            }
+
+            self.assertEqual(strict_targets, {local_pdf_target, "Missing Paper"})
+            self.assertEqual(ci_targets, {"Missing Paper"})
+
     def test_runtime_status_and_absolute_path_fail(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

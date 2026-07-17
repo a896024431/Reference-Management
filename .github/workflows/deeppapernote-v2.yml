@@ -15,6 +15,9 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
 
+    env:
+      PYTHONUTF8: "1"
+
     defaults:
       run:
         working-directory: .agents/skills/DeepPaperNote
@@ -55,4 +58,4 @@ jobs:
         run: python -m pytest -q tests
 
       - name: Validate tracked Vault
-        run: python scripts/lint_vault.py --vault ../../..
+        run: python scripts/lint_vault.py --vault ../../.. --allow-missing-local-pdfs
