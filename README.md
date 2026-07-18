@@ -35,16 +35,23 @@ Research/
 
 Zotero/infiniCloud 可以作为本地元数据和附件来源。通道可用时优先使用可信的本地结果；不可用时仍可使用本地 PDF、DOI、arXiv、URL 或开放元数据。仓库不会自动安装 Zotero 集成，也不会把临时集成状态写进论文笔记。
 
-## 环境要求
+## 运行环境
 
-- Python `>=3.10`
-- `PyMuPDF`
+Windows 本地统一使用 Miniconda 环境 `deeppapernote`，避免混用系统 Python 和不同来源的 `pip`。首次配置：
 
 ```powershell
-python -m pip install PyMuPDF
+conda create -n deeppapernote python=3.12 pip -y
+conda run --no-capture-output -n deeppapernote python -m pip install ".agents/skills/DeepPaperNote[dev]"
+conda env config vars set -n deeppapernote PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 ```
 
-DeepPaperNote 保存在 `.agents/skills/DeepPaperNote/`。具体工作流由其中的 `SKILL.md` 和相关说明文件定义。
+后续脚本、测试和校验均通过该环境顺序执行：
+
+```powershell
+conda run --no-capture-output -n deeppapernote python <脚本> ...
+```
+
+环境启用 Python UTF-8 mode 后，无需再添加 `-X utf8`；Windows 活动代码页仍为 936 也不影响 Python 的默认文本编码。具体工作流由 `.agents/skills/DeepPaperNote/SKILL.md` 和相关说明文件定义。
 
 ## GitHub 同步
 

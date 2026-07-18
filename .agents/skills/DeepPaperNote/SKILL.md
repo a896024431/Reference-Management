@@ -22,7 +22,9 @@ description: Generate an evidence-first Chinese deep-reading note for one paper 
 
 ## 唯一正式流程
 
-使用 Python 3.10 或更高版本，并确保 PyMuPDF 可导入：
+当前 Windows Vault 统一使用 Miniconda 环境 `deeppapernote`。非交互命令使用 `conda run --no-capture-output -n deeppapernote python ...` 并顺序执行，不得混用裸 `python`、裸 `pip` 或临时 Python 环境。环境必须满足 Python 3.10 或更高版本、PyMuPDF/`fitz` 可导入且 Python UTF-8 mode 已启用；其他平台或 CI 使用满足同样条件的等价环境。
+
+按以下顺序运行：
 
 1. `scripts/run_pipeline_v2.py`
 2. 模型读取 `synthesis_bundle.json` 并写 `note_plan.json`

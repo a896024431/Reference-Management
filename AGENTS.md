@@ -2,6 +2,12 @@
 
 本仓库根目录是 Obsidian Vault。项目目标很窄：用仓库内的 DeepPaperNote skill 为单篇论文生成高质量 Markdown 深读笔记，并在用户确认后同步到 GitHub。
 
+## 运行环境
+
+- Windows 本地脚本、测试和校验统一使用 Miniconda 环境 `deeppapernote`，不得混用裸 `python`、裸 `pip` 或其他临时 Python 环境。
+- 非交互命令使用 `conda run --no-capture-output -n deeppapernote python ...` 并顺序执行，避免 Windows 下 Conda 临时文件争用和输出重新编码。
+- 环境必须满足 Python `>=3.10`、可导入 PyMuPDF/`fitz` 且 `sys.flags.utf8_mode == 1`；任一条件不满足时停止并报告环境问题。
+
 ## 论文笔记工作流
 
 1. 用户给出论文标题、DOI、arXiv ID、URL 或本地 PDF，并要求生成论文笔记时，使用 DeepPaperNote 工作流。
