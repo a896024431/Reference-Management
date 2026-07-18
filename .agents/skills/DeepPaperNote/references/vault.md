@@ -1,4 +1,4 @@
-# Obsidian Vault Contract
+# Obsidian Vault 规则
 
 ## 永久目录
 
@@ -16,9 +16,9 @@
 
 `paper_type` 允许 `experimental_physics`、`theoretical_physics`、`materials_fabrication`、`ai_method`、`benchmark`、`clinical`、`humanities`、`survey`、`generic`。
 
-`evidence_level` 只允许 `full_text`、`full_text_supplement`。`note_status` 的 Vault 枚举保留 `draft`、`reviewed`、`polished`、`degraded` 以兼容历史手工内容，但正式发布器只接受 `polished`。`figure_status` 允许 `complete`、`partial`、`placeholder_only`、`none_needed`。
+`evidence_level` 只允许 `full_text`、`full_text_supplement`。`note_status` 的 Vault 枚举保留 `draft`、`reviewed`、`polished`、`degraded` 以兼容历史手工内容，但正式发布程序只接受 `polished`。`figure_status` 允许 `complete`、`partial`、`placeholder_only`、`none_needed`。
 
-发布器从已完整解析的 documents 推导 evidence level，从 figure decisions 推导 figure status；手写值不一致时拒绝发布。
+发布程序从已完整解析的 documents 推导 evidence level，从 figure decisions 推导 figure status；手写值不一致时拒绝发布。
 
 `date`、`doi`、`arxiv`、`source_url`、`local_pdf`、`supplement_pdfs`、`methods`、`materials`、`code_url`、`project_url`、`zotero_key`、`zotero_uri` 只在有值时写入。本地来源只允许 Vault 相对路径。
 
@@ -30,18 +30,18 @@
 
 没有唯一命中时保留纯文本，不猜测路径。`Research/论文库.base` 是属性数据库；`Research/论文导航.md` 嵌入 Base 并提供真实链接。
 
-## 原子发布与审计
+## 安全发布与本地记录
 
-发布前 staging 顶层必须恰好是 `笔记.md` 与 `images/`。发布器在 `Research/` 下准备完整临时目录后原子替换，失败时恢复旧目录。
+发布前，待发布目录顶层必须恰好是 `笔记.md` 与 `images/`。发布程序先在 `Research/` 下准备完整的新目录，确认准备完成后再替换旧目录；失败时恢复旧目录。
 
 发布使用的 paper/evidence/note-plan/lint/reviews/figure/contact-sheet/visual-review/report 归档到：
 
     .local/deeppapernote/published/<run_id>/
 
-审计也采用临时目录和原子替换；新审计失败时恢复旧审计。snapshot 同时记录规范 UTF-8 文本哈希、磁盘笔记字节哈希与每张图片字节哈希。任何正文或图片变化都会使旧审计过期。
+本地发布记录也先写入临时目录，完整写好后再替换旧记录；新记录写入失败时恢复旧记录。发布版本记录同时保存统一编码后的笔记内容指纹、磁盘笔记的字节级内容指纹和每张图片的字节级内容指纹。正文或图片发生变化后，旧记录不再对应当前文件。
 
 ## 本地与 Git 边界
 
 `.local/`、`.obsidian/`、PDF、Zotero 数据库、密钥、缓存与临时文件不进入 Git。Git 只同步根说明、DeepPaperNote skill、正式 workflow、Research Markdown、Base 和常见图片。
 
-每次发布后运行 `rebuild_paper_navigation.py` 与 `lint_vault.py`。Vault lint 必须通过属性枚举、绝对路径、链接、embed、图片解码、孤儿图片、导航覆盖和读者可见流程元数据检查。
+每次发布后运行 `rebuild_paper_navigation.py` 与 `lint_vault.py`。Vault lint 必须通过属性枚举、绝对路径、链接、embed、图片能否正常打开、未被引用图片、导航覆盖和读者可见流程元数据检查。

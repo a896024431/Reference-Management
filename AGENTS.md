@@ -8,8 +8,8 @@
 2. 开始处理前，必须读取 `.agents/skills/DeepPaperNote/SKILL.md`，并按其中要求读取相关说明文件。
 3. 每篇论文保存到 `Research/<论文标题>/`，目录内至少包含 `笔记.md` 和 `images/`；即使没有可靠图片，也要创建 `images/`。
 4. 任一 PDF 解析失败、全文截断、OCR 覆盖不足或关键证据缺失时停止并报告阻塞；不得生成摘要型或降级发布笔记。
-5. 写入 Obsidian 前，必须验证 note plan 的 evidence ID 绑定，完成 lint，并由不同于作者的另一代理或人工完成质量与可读性复核。
-6. 发布器只接受完整证据和 `note_status: polished`，并核对推导出的证据与插图状态。
+5. 写入 Obsidian 前，必须验证 note plan 中各条目与 evidence ID 的关联并完成 lint。默认由主代理显式调用至少一个不同于作者的新子 agent 完成质量与可读性复核；主代理不得代写复核结果。只有用户明确选择时才改用人工复核，无法获得独立复核时停止。
+6. 发布程序只接受完整证据和 `note_status: polished`，并核对推导出的证据与插图状态。
 7. 笔记完成、通过校验并保存后，必须询问用户是否需要同步到 GitHub。用户确认前不得执行 `git add`、`git commit` 或 `git push`。
 
 ## 内容与维护边界
@@ -42,7 +42,7 @@
 - `.local/`
 - `.env`、密钥、证书和本机配置
 - Obsidian workspace 状态，如 `.obsidian/`
-- 临时输出、Python/Node 缓存和构建产物
+- 临时输出、Python/Node 缓存和构建生成文件
 
 ## 同步流程
 
