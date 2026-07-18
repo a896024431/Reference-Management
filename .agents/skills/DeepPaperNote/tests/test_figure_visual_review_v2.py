@@ -5,7 +5,7 @@ from pathlib import Path
 
 import fitz
 import pytest
-from build_figure_contact_sheet_final_v2 import build_contact_sheet
+from build_figure_contact_sheet_v2 import build_contact_sheet
 from contracts_v2 import ContractError
 from figure_contracts_v2 import (
     build_figure_asset_identity,
@@ -17,7 +17,7 @@ from figure_visual_review_contracts_v2 import (
     build_figure_visual_review,
     validate_figure_visual_review,
 )
-from publish_note_final_v2 import validate_visual_review_for_publish
+from publish_note_v2 import validate_visual_review_for_publish
 
 PAPER_ID = "paper-contact-sheet-test"
 RUN_ID = "run-contact-sheet-test"

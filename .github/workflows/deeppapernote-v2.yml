@@ -39,20 +39,11 @@ jobs:
       - name: Compile scripts and tests
         run: python -m compileall -q scripts tests
 
-      - name: Check final v2 entrypoint
-        run: python scripts/run_pipeline_final_v2.py --help
+      - name: Check v2 entrypoint
+        run: python scripts/run_pipeline_v2.py --help
 
-      - name: Check v2 static quality
-        run: >-
-          python -m ruff check
-          scripts/*_v2.py
-          scripts/extract_evidence_v2
-          scripts/figure_contracts.py
-          scripts/lint_vault.py
-          scripts/rebuild_paper_navigation.py
-          scripts/vault.py
-          tests/test_rebuild_paper_navigation.py
-          tests/test_*_v2.py
+      - name: Check static quality
+        run: python -m ruff check scripts tests
 
       - name: Run full test suite
         run: python -m pytest -q tests

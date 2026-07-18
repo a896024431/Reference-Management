@@ -2,7 +2,7 @@
 # Long literals intentionally exercise complete Markdown fixtures.
 from __future__ import annotations
 
-from lint_note import (
+from note_lint_core import (
     figure_structure_issues,
     figure_structure_passes,
     find_missing_sections,

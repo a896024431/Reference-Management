@@ -1,319 +1,85 @@
-# Workflow
+# Schema v2 Workflow
 
-This skill is a single-paper production pipeline.
+## 目录
 
-The pipeline below describes the reusable core workflow plus the model-side handoff expected by any platform adapter.
+- 不变量与来源
+- 确定性流水线
+- 模型阶段
+- 发布阶段
+- 失败策略
+- 产物合同
 
-When the current environment exposes local bibliography tooling, run a local-library-first preflight before the deterministic pipeline:
-- search the local Zotero library by title, DOI, or arXiv id
-- if there is a confident local hit, materialize a JSON input record from that trusted metadata
-- inspect child attachments and prefer a local Zotero attachment path if one is available
-- if the integration does not expose the local path, use the attachment key and filename to locate it in common Zotero `storage/` roots
-- only fall back to title-based web resolution when the local library does not resolve the paper
+## 不变量与来源
 
-For convenience, MVP also includes a runner script that executes the deterministic stages sequentially:
-- `scripts/run_pipeline.py`
+一次运行只对应一篇论文，但可以包含一份主文和多份补充材料。每个 JSON 产物都必须包含 schema_version、artifact_type、paper_id、run_id、status 和 failures；同一运行的身份必须完全一致。
 
-## Global Stage Discipline
+优先使用用户提供的本地 PDF，其次使用可信 Zotero 附件、DOI/出版社、arXiv 或开放全文。Zotero 只作为可选 provider。不得让标题模糊匹配覆盖可信的本地库命中。
 
-For a normal single-paper note request, the pipeline below is a required execution contract.
+所有中间产物放在 .local/deeppapernote/runs/<run_id>/。正式 Research 目录不得保存运行 manifest。
 
-- Required stages must not be silently skipped.
-- Stage slowness is not a valid reason to bypass the stage.
-- Partial artifacts must not be reported as final completion.
-- If the workflow stops early, the report must name the current stage and the downstream required stages that remain incomplete.
-- If a required stage fails, only three actions are allowed:
-  - retry the same stage
-  - enter a fallback explicitly allowed by this skill
-  - stop and report the blocked stage honestly
-- Do not invent shortcuts that replace the declared workflow.
+## 确定性流水线
 
-## Pipeline
+scripts/run_pipeline_v2.py 依次完成：
 
-1. `resolve_paper`
-   Normalize the user input into one paper identity.
-   Accepted inputs: title, DOI, URL, arXiv ID, local PDF path, Zotero item key.
-   If the input is already a trusted JSON record from local-library resolution, prefer that over a fresh title search.
-   Completion condition:
-   - one canonical paper identity is selected
-   - obvious title ambiguity is resolved rather than hand-waved
-   Allowed on failure:
-   - retry with stronger identifiers or ask for clarification if identity is genuinely ambiguous
-   - do not continue as if a title-only guess were a confirmed paper
+1. 解析唯一论文身份。
+2. 合并规范元数据。
+3. 获取主文和补充材料 PDF。
+4. 逐页提取证据并按全文分类论文类型。
+5. 提取页面、图片和 caption-anchored 图表资产。
+6. 建立 placeholder-first 图表计划和候选排序。
+7. 构建无损 synthesis bundle。
+8. 写出 note plan 模板和 run manifest。
 
-2. `collect_metadata`
-   Build a canonical metadata record.
-   Preferred fields:
-   - title
-   - authors
-   - affiliations
-   - year
-   - venue
-   - DOI
-   - abstract
-   - code URL
-   - project URL
-   - source URL
-   Completion condition:
-   - a canonical metadata record exists, even if some optional fields remain empty
-   Allowed on failure:
-   - continue only with an explicitly partial metadata record
-   - do not pretend metadata collection happened if no canonical record was produced
+正常入口参数：
 
-3. `fetch_pdf`
-   Acquire the best available PDF or equivalent full text.
-   Preferred order:
-   - local PDF
-   - Zotero attachment
-   - arXiv or open-access PDF
-   - publisher PDF if accessible
-   Completion condition:
-   - a usable PDF or trustworthy full-text substitute is available for downstream extraction
-   Allowed on failure:
-   - stop or produce a clearly labeled degraded path
-   - do not continue as if this were a full deep read when only thin metadata exists
+- --input 或 --input-record，二选一。
+- --run-id；未提供时生成 UTC 标识。
+- --workdir；默认 .local/deeppapernote/runs。
+- --vault-root，用于生成安全的 Vault 相对路径。
+- --supplement，可重复提供。
+- --offline。
+- --max-pages；0 表示全文。
 
-4. `extract_evidence`
-   Produce an evidence pack rather than a finished note.
-   This stage should favor broad collection over early judgment.
-   Evidence targets:
-   - section texts
-   - candidate chunks per section
-   - data/material mentions
-   - metrics and numeric claims
-   - figure and table captions
-   - enough context for the model to decide what is truly central
-   Completion condition:
-   - an evidence pack exists with section-level or candidate-level evidence for the paper
-   Allowed on failure:
-   - retry extraction or clearly mark evidence quality as degraded
-   - do not replace this stage with "I read some of the PDF myself so it is probably fine"
+确定性流水线完成只表示 synthesis bundle 已准备好，不能表述为笔记完成。
 
-5. `extract_pdf_assets`
-   Export page-level PDF image assets and page metadata.
-   This stage should be deterministic:
-   - prefer object-level image extraction from the PDF
-   - record page number, image index, dimensions, and extraction method
-   - use OCR only as page-text fallback, not as semantic figure matching
-   Completion condition:
-   - page/image asset metadata is produced, or the failure is explicitly recorded
-   Allowed on failure:
-   - continue with decision-first figure handling; record the unavailable asset in run artifacts, not in reader prose
-   - do not silently skip this stage and then talk as if figure handling were complete
+## 模型阶段
 
-6. `plan_figures`
-   Build a figure inventory and make one `inserted`, `placeholder`, or `omitted` decision for every major figure/table that matters to the note.
-   Decision-first rule:
-   - preserve the scientific coverage even if images are unavailable
-   - insert a real image only when it matches with enough confidence and is visually usable
-   - preserve the original paper numbering such as `Fig. 2` or `Table 1` in an inserted caption
-   - keep target location, candidates, and reasons in the figure-decision artifact
-   Completion condition:
-   - every major figure/table has a recorded decision
-   Allowed on failure:
-   - retain the decision and limitation in run artifacts; do not create a reader-visible placeholder
-   - do not skip this stage just because image matching is slow or imperfect
+模型必须读取 synthesis_bundle.json，先生成短而结构化的 note_plan.json，再写完整笔记。note plan 至少包含论文类型、必须覆盖内容、关键结论、关键数字、章节安排、图表意图及对应 evidence_id。
 
-7. `build_synthesis_bundle`
-   Assemble a model-facing bundle from metadata, evidence, section previews, figure plan, and PDF assets.
-   This is the main handoff point from scripts to the language model.
-   Completion condition:
-   - the synthesis bundle exists and is the actual model handoff input
-   Allowed on failure:
-   - stop and report bundle construction as the blocking stage
-   - do not replace the bundle with ad hoc memory of prior stages
+正文完成后依次执行：
 
-8. model note planning
-   Before drafting the final note, create an explicit short note-planning artifact:
-   - infer the paper type
-   - decide which sections deserve the most weight
-   - decide which sections need `###` subheadings
-   - select the most important numbers, comparisons, and figure/table evidence
-   - add paper-specific subsections when the evidence supports them
-   Recommended form:
-   - a compact `<note_plan>...</note_plan>` block
-   - or a temporary planning file saved before the final note
-   Do not rely only on an implicit hidden-planning step.
-   Completion condition:
-   - an explicit `note_plan` artifact exists
-   Allowed on failure:
-   - revise planning until a short inspectable plan exists
-   - do not jump straight to prose and claim planning was basically done
+1. lint_note_v2.py。
+2. record_note_review_v2.py --kind quality。
+3. 完整可读性复核；若正文修改则重跑 lint。
+4. record_note_review_v2.py --kind readability，并绑定通过的 lint。
+5. 构建 contact sheet、记录图像视觉复核。
 
-9. model synthesis
-   The language model reads the synthesis bundle and writes the actual note.
-   It should do all understanding-heavy work:
-   - choose emphasis
-   - separate research problem from task definition
-   - reconstruct method flow
-   - pick the most meaningful results
-   - identify limitations and what the paper does not prove
-   Completion condition:
-   - a complete note draft exists, not just scattered sections or a partial summary
-   Allowed on failure:
-   - stop and report that drafting is incomplete
-   - do not collapse a partial draft into "the note is finished"
+## 发布阶段
 
-10. `lint_note`
-   Check structure, heading levels, missing sections, weak analysis, and mixed-language prose.
-   If the refined note still contains half-English half-Chinese lines, fail closed before vault write.
-   Completion condition:
-   - lint has actually run and produced a result
-   Allowed on failure:
-   - revise and rerun lint
-   - do not say the note is already validated if lint never ran
+publish_note_v2.py 在写入前验证：
 
-11. `final_readability_review`
-   After the first successful script lint pass, reread the full note once more as a language-and-expression quality pass.
-   This stage exists because script lint only enforces the floor and cannot judge every awkward phrase or stiff translation.
-   Required focus:
-   - smooth unnatural Chinese prose
-   - remove stiff translations
-   - rewrite ordinary English phrase leftovers into natural Chinese
-   - keep stable proper nouns only when retaining English is genuinely more natural
-   Completion condition:
-   - the full note has been reread after lint
-   - any readability-driven edits are complete
-   - if edits were made, the note is marked for a lint rerun before save
-   Allowed on failure:
-   - continue rereading or revising until the readability review is complete
-   - do not treat lint already passed as permission to skip this stage
-   - do not invent new facts or change core numbers and conclusions under the name of polish
+- paper record、evidence、note plan、lint、质量复核、可读性复核、figure manifest、figure decisions 身份一致。
+- 所有文字复核绑定最终笔记 SHA-256。
+- 图像复核绑定 manifest、decisions 和 contact sheet。
+- 插入图片存在、可解码、哈希匹配，且笔记没有坏 embed 或孤儿图片。
+- frontmatter、论文标题、证据等级和 degraded 状态一致。
 
-12. `write_obsidian_note`
-   Save the final Markdown into the target vault.
-   First decide the save mode explicitly:
-    - if no Obsidian vault is configured, workspace mode is allowed
-    - if an Obsidian vault is configured, vault mode is required
-    - do not reinterpret "vault configured but not currently writable" as a workspace-fallback case
-    Resolve a paper folder before writing:
-    - use `Research/<paper_title>/笔记.md` by default
-    - preserve the canonical paper title exactly, except for removing filesystem-invalid characters
-    - do not add domain/category directory layers unless the user explicitly asks
-    - do not save directly into the bare `Research` root
-    Complete the figure decision before this step:
-    - materialize only high-confidence images
-    - keep lower-confidence decisions in run artifacts without a visible note block
-    - do not split text writing and figure handling into two separate user turns by default
-    If the configured vault or its paper-local `images/` directory cannot currently be written:
-    - immediately ask the user for permission escalation
-    - do not silently change the output target to the workspace
-    - do not silently skip `images/` directory creation
-    If the user refuses permission escalation:
-    - stop the formal save flow and report that the Obsidian write did not complete
-    - do not save to the workspace unless the user is asked again and explicitly approves that fallback
-    Default vault layout:
-    - one folder per paper
-    - the note Markdown inside that folder
-    - an `images/` subfolder for materialized figure assets, created even when it stays empty
-    Do not claim the note is already saved to Obsidian if the vault write or `images/` directory creation never actually happened.
-    Completion condition:
-    - the note is actually written to the chosen target, and required paper-local layout is materialized
-    Allowed on failure:
-    - report the write step as incomplete
-    - do not present ready-to-write or temporary-file-exists as a successful save
+发布器先在 Research 下准备完整临时目录，再原子替换目标。失败时恢复旧目录；成功后删除事务备份。正式目录只含 笔记.md 与 images/。紧凑 JSON 审计写入 .local/deeppapernote/published/<run_id>/。
 
-## Final Writing Rule
+随后运行 rebuild_paper_navigation.py 和 lint_vault.py。
 
-The structured artifacts are necessary, but they are not the final goal.
+## 失败策略
 
-For the best note quality:
-- scripts should gather and structure evidence
-- the model should read the synthesis bundle and write the final note in its own words
-- do not delegate paper understanding to keyword scripts if the model can infer it from the bundle
+必需阶段失败时只能重试、使用本文件明确允许的降级，或停止并报告。不得跳过阶段、用临时产物冒充发布结果，也不得因速度或便利性改变输出目标。
 
-Use [final-writing.md](final-writing.md) as the last-mile writing guide.
-Use [evidence-first.md](evidence-first.md) and [deep-analysis.md](deep-analysis.md) for the planning and deep-reading rules that should shape the final note.
+没有可用全文、关键方法证据或结果证据时 fail closed。允许 degraded 发布时，原因必须同时出现在 frontmatter 和首屏。
 
-## Required Contracts
+## 产物合同
 
-### `metadata.json`
+paper_record.json 保存规范元数据和 documents；每份 document 记录角色、来源、路径、哈希和页数。
 
-Required keys:
-- `title`
-- `paper_id`
-- `source_type`
-- `source_url`
-- `year`
+evidence_pack.json 保存全文论文类型、evidence_units、覆盖率、页面、章节和图表/公式引用。每个 evidence unit 保留 document_id、角色、页码、章节和稳定 evidence_id。
 
-Optional keys:
-- `authors`
-- `affiliations`
-- `venue`
-- `doi`
-- `abstract`
-- `code_url`
-- `project_url`
-- `zotero_key`
-- `arxiv_id`
-- `translated_title`
-- `metadata_sources`
+figure_manifest.json 保存碰撞安全的候选资产、来源页、caption/crop 身份、哈希与质量信号。figure_decisions.json 为每个重要视觉记录 inserted、placeholder 或 omitted。
 
-### `evidence_pack.json`
-
-Suggested keys:
-- `problem_evidence`
-- `task_evidence`
-- `data_evidence`
-- `method_evidence`
-- `results_evidence`
-- `limitations_evidence`
-- `section_texts`
-- `candidate_chunks`
-- `figure_captions`
-- `table_captions`
-- `sections`
-- `evidence_quality`
-- `extraction_failures`
-- `quotes`
-
-### `figure_plan.json`
-
-Suggested keys per item:
-- `id`
-- `caption`
-- `kind`
-- `section`
-- `reason`
-- `priority`
-- `anchor_text`
-- `insert_mode`
-
-See `scripts/contracts.py` for the corresponding scaffolded JSON contract definitions.
-
-### `synthesis_bundle.json`
-
-Suggested keys:
-- `metadata`
-- `evidence`
-- `section_previews`
-- `figure_plan`
-- `pdf_assets`
-- `summary`
-- `writing_contract`
-
-### `note_plan`
-
-Suggested keys:
-- `paper_type`
-- `dominant_domain`
-- `must_cover`
-- `key_numbers`
-- `real_comparisons`
-- `section_plan`
-
-## Failure Policy
-
-Do not silently downgrade.
-
-If the PDF or evidence is insufficient:
-- report which stage failed
-- explain why a full deep note is not trustworthy
-- optionally produce a clearly labeled degraded note
-
-## Portability Rule
-
-Keep the core workflow portable:
-- the data contracts should remain useful outside any one agent runtime
-- the scripts should not depend on platform-specific message formatting
-- platform-specific behavior belongs in the adapter layer
+lint_report.json、quality_review.json 和 readability_review.json 必须绑定最终笔记的规范 UTF-8 文本哈希。published audit 另存磁盘文件字节哈希；任何正文编辑都会使旧报告与快照失效。

@@ -1,7 +1,7 @@
 interface:
   display_name: "DeepPaperNote"
-  short_description: "Generate a high-quality deep-reading note for one paper with an evidence-first workflow and Obsidian-oriented save semantics."
-  default_prompt: "Use $DeepPaperNote when the user wants to turn a single paper into a high-quality Markdown deep-reading note. Follow the bundled DeepPaperNote workflow to resolve the paper, gather evidence, plan figure and table placeholders, write the final Chinese note, run lint plus final readability review, and save it into the configured Obsidian-style vault or the workspace fallback when no vault is configured."
+  short_description: "为单篇论文生成证据优先的 Obsidian 深读笔记"
+  default_prompt: "Use $deeppapernote to turn one paper into a verified Chinese deep-reading note and publish it into this Obsidian vault."
 
 policy:
   allow_implicit_invocation: true

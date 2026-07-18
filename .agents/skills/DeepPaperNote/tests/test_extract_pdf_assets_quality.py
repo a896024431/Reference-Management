@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from extract_pdf_assets import _classify_visual_quality, _other_caption_labels_for_crop
+from pdf_assets_core import _classify_visual_quality, _other_caption_labels_for_crop
 
 
 def test_quality_classification_rejects_table_without_body_rows() -> None:

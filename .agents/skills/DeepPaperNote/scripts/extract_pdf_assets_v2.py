@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Extract collision-proof, caption-anchored PDF visual assets (schema v2).
+"""Extract canonical multi-document schema-v2 PDF visual assets.
 
-This module reuses the mature crop and visual-quality heuristics from the MVP
+This module reuses mature crop and visual-quality heuristics from the private core
 extractor while fixing its identity and caption-detection failure modes.
 """
 
@@ -12,15 +12,17 @@ import re
 from pathlib import Path
 from typing import Any
 
-import extract_pdf_assets as legacy
-from common import default_assets_dir, emit, fitz, normalize_whitespace
-from figure_contracts import (
-    FIGURE_SCHEMA_VERSION,
-    build_figure_asset_identity,
-    make_figure_manifest,
-    sha256_bytes,
-    sha256_file,
+import pdf_assets_core as core
+from common import fitz, normalize_whitespace
+from contracts_v2 import (
+    artifact_header,
+    emit_json,
+    load_json_object,
+    require_same_identity,
+    validate_paper_record_artifact,
 )
+from figure_contracts import build_figure_asset_identity, sha256_bytes, sha256_file
+from figure_contracts_v2 import make_figure_manifest
 
 CAPTION_START_RE = re.compile(
     r"^(?P<label>(?:extended\s+data\s+fig(?:ure)?|supplementary\s+fig(?:ure)?|fig(?:ure)?|table)"
@@ -54,20 +56,16 @@ BODY_REFERENCE_VERBS = {
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__ or "extract pdf assets v2")
+    p = argparse.ArgumentParser(description=__doc__ or "extract pdf assets contract v2")
+    p.add_argument("--input", required=True, help="paper_record v2 JSON.")
+    p.add_argument("--output", default="")
+    p.add_argument("--assets-dir", required=True, help="Run-local output directory.")
     p.add_argument(
-        "--input",
-        required=True,
-        help="Fetch/paper-record JSON, JSON string, or raw paper reference.",
-    )
-    p.add_argument("--output", default="", help="Output JSON path.")
-    p.add_argument("--assets-dir", default="", help="Optional explicit assets directory.")
-    p.add_argument(
-        "--max-pages", type=int, default=0, help="Maximum pages to scan; 0 scans the full document."
+        "--max-pages", type=int, default=0, help="Per-document limit; 0 scans all pages."
     )
     p.add_argument("--min-searchable-chars", type=int, default=100)
     p.add_argument("--ocr-dpi", type=int, default=300)
-    p.add_argument("--figure-dpi", type=int, default=legacy.FIGURE_RENDER_DPI)
+    p.add_argument("--figure-dpi", type=int, default=core.FIGURE_RENDER_DPI)
     return p
 
 
@@ -87,7 +85,7 @@ def _parse_caption_start(text: str) -> dict[str, str] | None:
         return None
     return {
         "label": label,
-        "kind": legacy._classify_caption_kind(label),
+        "kind": core._classify_caption_kind(label),
         "rest": rest,
         "separator": separator,
     }
@@ -121,7 +119,7 @@ def _find_caption_blocks(page) -> list[dict[str, Any]]:
                 ).strip()
                 if not continuation_text or _parse_caption_start(continuation_text):
                     break
-                if legacy._looks_like_data_row(continuation_text):
+                if core._looks_like_data_row(continuation_text):
                     break
                 cb = continuation["bbox"]
                 if cb[1] - previous_bottom > line_height * 1.6:
@@ -208,7 +206,7 @@ def extract_page_images_v2(
             extension=extension,
         )
         output_path = images_dir / filename
-        legacy.save_image_bytes(output_path, image_bytes)
+        core.save_image_bytes(output_path, image_bytes)
         assets.append(
             {
                 "asset_id": asset_id,
@@ -238,7 +236,7 @@ def extract_figure_regions_v2(
     images_dir: Path,
     *,
     document_id: str,
-    dpi: int = legacy.FIGURE_RENDER_DPI,
+    dpi: int = core.FIGURE_RENDER_DPI,
 ) -> list[dict[str, Any]]:
     if fitz is None:
         return []
@@ -254,21 +252,21 @@ def extract_figure_regions_v2(
         bbox = None
         table_body_rows = 0
         if kind == "table":
-            table_result = legacy._estimate_table_bbox_with_rows(
+            table_result = core._estimate_table_bbox_with_rows(
                 page, anchor, previous, following, page_rect
             )
             if table_result is not None:
                 bbox, table_body_rows = table_result
             if bbox is None:
-                bbox = legacy._estimate_figure_bbox_above_caption(page, anchor, previous, page_rect)
+                bbox = core._estimate_figure_bbox_above_caption(page, anchor, previous, page_rect)
         else:
-            bbox = legacy._estimate_figure_bbox_above_caption(page, anchor, previous, page_rect)
+            bbox = core._estimate_figure_bbox_above_caption(page, anchor, previous, page_rect)
             if bbox is None:
-                bbox = legacy._estimate_table_bbox(page, anchor, previous, following, page_rect)
+                bbox = core._estimate_table_bbox(page, anchor, previous, following, page_rect)
         if bbox is None:
             continue
         try:
-            png_bytes = legacy._render_crop(page, bbox, dpi)
+            png_bytes = core._render_crop(page, bbox, dpi)
         except Exception:
             continue
         content_hash = sha256_bytes(png_bytes)
@@ -282,8 +280,8 @@ def extract_figure_regions_v2(
             extension="png",
         )
         output_path = images_dir / filename
-        legacy.save_image_bytes(output_path, png_bytes)
-        quality_signals = legacy._quality_signals_for_crop(
+        core.save_image_bytes(output_path, png_bytes)
+        quality_signals = core._quality_signals_for_crop(
             page,
             kind,
             bbox,
@@ -318,96 +316,135 @@ def extract_figure_regions_v2(
     return assets
 
 
-def main() -> None:
-    args = parser().parse_args()
-    record = legacy.ensure_record(args.input)
-    pdf_path = Path(str(record.get("pdf_path", "")).strip()).expanduser()
-    if not pdf_path.exists():
-        raise SystemExit("extract_pdf_assets_v2.py requires a resolvable local PDF path.")
-    if fitz is None:
-        raise SystemExit("extract_pdf_assets_v2.py requires PyMuPDF (`fitz`).")
-    pdf_path = pdf_path.resolve()
-    paper_id, run_id, pdf_hash = _stable_run_identity(record, pdf_path)
-    document_id, document_role = _resolve_document(record, pdf_path)
-    asset_root = (
-        Path(args.assets_dir).expanduser().resolve()
-        if args.assets_dir
-        else default_assets_dir(record)
-    )
-    images_dir = asset_root / "images"
+def extract_paper_record_assets(
+    paper_record_artifact: dict[str, Any],
+    *,
+    assets_dir: str | Path,
+    max_pages: int = 0,
+    min_searchable_chars: int = 100,
+    ocr_dpi: int = 300,
+    figure_dpi: int = core.FIGURE_RENDER_DPI,
+) -> dict[str, Any]:
+    validate_paper_record_artifact(paper_record_artifact)
+    if core.fitz is None:
+        raise RuntimeError("PyMuPDF (`fitz`) is required")
+    paper_id = str(paper_record_artifact["paper_id"])
+    run_id = str(paper_record_artifact["run_id"])
+    root = Path(assets_dir).expanduser().resolve()
+    images_dir = root / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
-
-    page_records: list[dict[str, Any]] = []
+    page_assets: list[dict[str, Any]] = []
     image_assets: list[dict[str, Any]] = []
     figure_assets: list[dict[str, Any]] = []
-    doc = fitz.open(pdf_path)
-    try:
-        page_limit = len(doc) if args.max_pages <= 0 else min(len(doc), args.max_pages)
-        for index in range(page_limit):
-            page = doc[index]
-            page_number = index + 1
-            text = normalize_whitespace(page.get_text("text"))
-            searchable_chars = len(text)
-            extraction_method = "text" if searchable_chars >= args.min_searchable_chars else "none"
-            ocr_text = ""
-            if extraction_method == "none":
-                ocr_text = legacy.ocr_page(page, args.ocr_dpi)
-                if ocr_text:
-                    extraction_method = "ocr"
-            page_images = extract_page_images_v2(
-                doc, page, page_number, images_dir, document_id=document_id
-            )
-            page_figures = extract_figure_regions_v2(
-                page,
-                page_number,
-                images_dir,
-                document_id=document_id,
-                dpi=args.figure_dpi,
-            )
-            image_assets.extend(page_images)
-            figure_assets.extend(page_figures)
-            page_records.append(
-                {
-                    "document_id": document_id,
-                    "page_number": page_number,
-                    "searchable_text_chars": searchable_chars,
-                    "text_extraction_method": extraction_method,
-                    "ocr_used": extraction_method == "ocr",
-                    "image_count": len(page_images),
-                    "figure_count": len(page_figures),
-                    "page_text": text or ocr_text,
-                    "text_preview": (text or ocr_text)[:240],
-                }
-            )
-    finally:
-        doc.close()
+    failures: list[str] = []
+    processed_documents: list[dict[str, Any]] = []
 
-    manifest = make_figure_manifest(
-        paper_id=paper_id,
-        run_id=run_id,
-        assets=figure_assets,
-        failures=[],
+    documents = paper_record_artifact["paper_record"].get("documents", [])
+    for document in documents:
+        document_id = str(document.get("document_id", ""))
+        document_role = str(document.get("role", ""))
+        pdf_path = Path(str(document.get("path", ""))).expanduser()
+        if not pdf_path.is_file():
+            failures.append(f"pdf_asset_document_missing:{document_id}")
+            continue
+        doc = core.fitz.open(pdf_path.resolve())
+        document_page_count = 0
+        try:
+            page_limit = len(doc) if max_pages <= 0 else min(len(doc), max_pages)
+            for index in range(page_limit):
+                page = doc[index]
+                page_number = index + 1
+                text = core.normalize_whitespace(page.get_text("text"))
+                searchable_chars = len(text)
+                extraction_method = "text" if searchable_chars >= min_searchable_chars else "none"
+                ocr_text = ""
+                if extraction_method == "none":
+                    ocr_text = core.ocr_page(page, ocr_dpi)
+                    if ocr_text:
+                        extraction_method = "ocr"
+                page_images = extract_page_images_v2(
+                    doc, page, page_number, images_dir, document_id=document_id
+                )
+                page_figures = extract_figure_regions_v2(
+                    page,
+                    page_number,
+                    images_dir,
+                    document_id=document_id,
+                    dpi=figure_dpi,
+                )
+                image_assets.extend(page_images)
+                figure_assets.extend(page_figures)
+                page_assets.append(
+                    {
+                        "document_id": document_id,
+                        "document_role": document_role,
+                        "page_number": page_number,
+                        "searchable_text_chars": searchable_chars,
+                        "text_extraction_method": extraction_method,
+                        "ocr_used": extraction_method == "ocr",
+                        "image_count": len(page_images),
+                        "figure_count": len(page_figures),
+                        "page_text": text or ocr_text,
+                        "text_preview": (text or ocr_text)[:240],
+                    }
+                )
+                document_page_count += 1
+        except Exception as exc:
+            failures.append(f"pdf_asset_extraction_failed:{document_id}:{exc}")
+        finally:
+            doc.close()
+        processed_documents.append(
+            {
+                "document_id": document_id,
+                "role": document_role,
+                "source_sha256": str(document.get("sha256", "")),
+                "pages_processed": document_page_count,
+            }
+        )
+
+    if not processed_documents:
+        status = "fail"
+    elif failures:
+        status = "degraded"
+    else:
+        status = "pass"
+    payload = artifact_header(
+        "pdf_assets", paper_id=paper_id, run_id=run_id, status=status, failures=failures
     )
-    payload = {
-        "schema_version": FIGURE_SCHEMA_VERSION,
-        "status": "ok",
-        "failures": [],
-        "script": "extract_pdf_assets_v2.py",
-        "paper_id": paper_id,
-        "run_id": run_id,
-        "document_id": document_id,
-        "document_role": document_role,
-        "pdf_path": str(pdf_path),
-        "pdf_sha256": pdf_hash,
-        "asset_root": str(asset_root),
-        "images_dir": str(images_dir),
-        "page_assets": page_records,
-        "image_assets": image_assets,
-        "figure_assets": figure_assets,
-        "figure_manifest": manifest,
-        "ocr_available": bool(legacy.pytesseract and legacy.Image),
-    }
-    emit(payload, args.output)
+    payload.update(
+        {
+            "asset_root": str(root),
+            "images_dir": str(images_dir),
+            "documents": processed_documents,
+            "page_assets": page_assets,
+            "image_assets": image_assets,
+            "figure_assets": figure_assets,
+            "figure_manifest": make_figure_manifest(
+                paper_id=paper_id,
+                run_id=run_id,
+                assets=figure_assets,
+                failures=failures,
+                status=status,
+            ),
+            "ocr_available": bool(core.pytesseract and core.Image),
+        }
+    )
+    require_same_identity(payload, payload["figure_manifest"])
+    return payload
+
+
+def main() -> None:
+    args = parser().parse_args()
+    paper_record = load_json_object(args.input)
+    payload = extract_paper_record_assets(
+        paper_record,
+        assets_dir=args.assets_dir,
+        max_pages=args.max_pages,
+        min_searchable_chars=args.min_searchable_chars,
+        ocr_dpi=args.ocr_dpi,
+        figure_dpi=args.figure_dpi,
+    )
+    emit_json(payload, args.output)
 
 
 if __name__ == "__main__":

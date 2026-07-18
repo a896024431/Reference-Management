@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Strictly validate and transactionally publish a staged v2 paper note directory."""
+"""Validate, archive, and atomically publish one schema-v2 paper note."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -29,7 +30,11 @@ from figure_contracts_v2 import (
     normalize_figure_decisions,
     normalize_figure_manifest,
 )
-from lint_note_release_v2 import reader_visible_figure_metadata_issues
+from figure_visual_review_contracts_v2 import (
+    canonical_json_sha256,
+    validate_figure_visual_review,
+)
+from lint_note_v2 import reader_visible_figure_metadata_issues
 from vault import parse_frontmatter, validate_frontmatter_properties, validate_image_file
 
 NOTE_FILENAME = "笔记.md"
@@ -38,9 +43,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
 
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
-    command.add_argument(
-        "--staging-dir", required=True, help="Directory containing 笔记.md and images/."
-    )
+    command.add_argument("--staging-dir", required=True)
     command.add_argument("--vault", required=True)
     command.add_argument("--paper-record", required=True)
     command.add_argument("--evidence", required=True)
@@ -50,12 +53,13 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--readability", required=True)
     command.add_argument("--figure-manifest", required=True)
     command.add_argument("--figure-decisions", required=True)
+    command.add_argument("--figure-contact-sheet", required=True)
+    command.add_argument("--figure-visual-review", required=True)
     command.add_argument("--backup-root", default="")
     command.add_argument("--output", default="")
     command.add_argument("--allow-degraded", action="store_true")
     command.add_argument("--dry-run", action="store_true")
     return command
-
 
 def _safe_folder_name(title: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*]', "", title).strip().rstrip(".")
@@ -94,6 +98,23 @@ def _load_artifacts(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
         "figure_decisions": load_json_object(args.figure_decisions),
     }
 
+
+def validate_visual_review_for_publish(
+    *,
+    visual_review: dict[str, Any],
+    contact_sheet: dict[str, Any],
+    artifacts: dict[str, dict[str, Any]],
+) -> None:
+    """Bind the visual review to the same manifest, decisions, and run identity."""
+    manifest = artifacts["figure_manifest"]
+    decisions = artifacts["figure_decisions"]
+    validate_figure_visual_review(
+        visual_review,
+        manifest=manifest,
+        decisions=decisions,
+        contact_sheet=contact_sheet,
+    )
+    require_same_identity(visual_review, contact_sheet, *artifacts.values())
 
 def _referenced_image_names(note_text: str) -> set[str]:
     names: set[str] = set()
@@ -206,26 +227,11 @@ def validate_release(
     }
 
 
-def _prepare_directory(
-    *,
-    staging_dir: Path,
-    prepared: Path,
-    artifacts: dict[str, dict[str, Any]],
-    canonical_manifest: dict[str, Any],
-    canonical_decisions: dict[str, Any],
-) -> None:
+def _prepare_directory(*, staging_dir: Path, prepared: Path) -> None:
+    """Prepare only reader-facing Vault content."""
     prepared.mkdir(parents=True, exist_ok=False)
     shutil.copy2(staging_dir / NOTE_FILENAME, prepared / NOTE_FILENAME)
     shutil.copytree(staging_dir / "images", prepared / "images")
-    manifests_dir = prepared / "manifests"
-    manifests_dir.mkdir()
-    for name, artifact in artifacts.items():
-        payload = artifact
-        if name == "figure_manifest":
-            payload = canonical_manifest
-        elif name == "figure_decisions":
-            payload = canonical_decisions
-        emit_json(payload, manifests_dir / f"{name}.json")
 
 
 def publish_transaction(
@@ -233,7 +239,6 @@ def publish_transaction(
     staging_dir: Path,
     vault: Path,
     backup_root: Path,
-    artifacts: dict[str, dict[str, Any]],
     release: dict[str, Any],
 ) -> tuple[Path, Path | None]:
     research = vault / "Research"
@@ -242,13 +247,7 @@ def publish_transaction(
     prepared = research / f".{release['folder_name']}.publish-{uuid.uuid4().hex}"
     if not _inside(prepared, research):
         raise ContractError("Prepared publish directory escaped Research")
-    _prepare_directory(
-        staging_dir=staging_dir,
-        prepared=prepared,
-        artifacts=artifacts,
-        canonical_manifest=release["manifest"],
-        canonical_decisions=release["decisions"],
-    )
+    _prepare_directory(staging_dir=staging_dir, prepared=prepared)
 
     backup_target: Path | None = None
     try:
@@ -273,6 +272,92 @@ def publish_transaction(
     return target, backup_target
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _audit_target(vault: Path, run_id: str) -> Path:
+    safe_run_id = re.sub(r"[^A-Za-z0-9._-]+", "-", run_id).strip(".-")
+    if not safe_run_id or safe_run_id != run_id:
+        raise ContractError(f"Unsafe run_id for audit directory: {run_id}")
+    return vault / ".local" / "deeppapernote" / "published" / safe_run_id
+
+
+def archive_publish_audit(
+    *,
+    vault: Path,
+    target: Path,
+    artifacts: dict[str, dict[str, Any]],
+    contact_sheet: dict[str, Any],
+    visual_review: dict[str, Any],
+    release: dict[str, Any],
+    report: dict[str, Any],
+) -> Path:
+    """Write a compact JSON-only audit outside the reader-facing Research tree."""
+    audit_target = _audit_target(vault, release["run_id"])
+    audit_root = audit_target.parent
+    audit_root.mkdir(parents=True, exist_ok=True)
+    temporary = audit_root / f".{release['run_id']}.audit-{uuid.uuid4().hex}"
+    temporary.mkdir(parents=True, exist_ok=False)
+    try:
+        for name, artifact in artifacts.items():
+            emit_json(artifact, temporary / f"{name}.json")
+        emit_json(contact_sheet, temporary / "figure_contact_sheet.json")
+        emit_json(visual_review, temporary / "figure_visual_review.json")
+        emit_json(report, temporary / "publish_report.json")
+        image_records = []
+        for image in sorted((target / "images").iterdir(), key=lambda item: item.name.casefold()):
+            if image.is_file() and image.suffix.lower() in IMAGE_EXTENSIONS:
+                image_records.append(
+                    {
+                        "name": image.name,
+                        "sha256": _sha256_file(image),
+                        "size_bytes": image.stat().st_size,
+                    }
+                )
+        snapshot = artifact_header(
+            "published_audit",
+            paper_id=release["paper_id"],
+            run_id=release["run_id"],
+            status="pass",
+        )
+        snapshot.update(
+            {
+                "note": (
+                    Path("Research") / release["folder_name"] / NOTE_FILENAME
+                ).as_posix(),
+                "note_sha256": release["note_sha256"],
+                "note_file_sha256": _sha256_file(target / NOTE_FILENAME),
+                "images": image_records,
+                "artifact_files": sorted(path.name for path in temporary.glob("*.json")),
+                "contact_sheet_sha256": canonical_json_sha256(contact_sheet),
+                "visual_review_sha256": canonical_json_sha256(visual_review),
+            }
+        )
+        emit_json(snapshot, temporary / "snapshot.json")
+        if audit_target.exists():
+            _safe_remove_tree(audit_target, allowed_root=audit_root)
+        os.replace(temporary, audit_target)
+    except Exception:
+        if temporary.exists():
+            _safe_remove_tree(temporary, allowed_root=audit_root)
+        raise
+    return audit_target
+
+
+def _rollback_after_audit_failure(
+    *, target: Path, backup: Path | None, vault: Path
+) -> None:
+    research = vault / "Research"
+    if target.exists():
+        _safe_remove_tree(target, allowed_root=research)
+    if backup and backup.exists():
+        os.replace(backup, target)
+
 def main() -> None:
     args = parser().parse_args()
     staging_dir = Path(args.staging_dir).expanduser().resolve()
@@ -281,7 +366,15 @@ def main() -> None:
         raise SystemExit(f"Staging directory does not exist: {staging_dir}")
     if not vault.is_dir():
         raise SystemExit(f"Vault does not exist: {vault}")
+
     artifacts = _load_artifacts(args)
+    contact_sheet = load_json_object(args.figure_contact_sheet)
+    visual_review = load_json_object(args.figure_visual_review)
+    validate_visual_review_for_publish(
+        visual_review=visual_review,
+        contact_sheet=contact_sheet,
+        artifacts=artifacts,
+    )
     release = validate_release(
         staging_dir=staging_dir,
         artifacts=artifacts,
@@ -290,18 +383,13 @@ def main() -> None:
     backup_root = (
         Path(args.backup_root).expanduser().resolve()
         if args.backup_root
-        else vault / ".local" / "deeppapernote" / "migration-backup" / release["run_id"]
+        else vault / ".local" / "deeppapernote" / "rollback" / release["run_id"]
     )
+    predicted_target = vault / "Research" / release["folder_name"]
+    predicted_audit = _audit_target(vault, release["run_id"])
     target: Path | None = None
     backup: Path | None = None
-    if not args.dry_run:
-        target, backup = publish_transaction(
-            staging_dir=staging_dir,
-            vault=vault,
-            backup_root=backup_root,
-            artifacts=artifacts,
-            release=release,
-        )
+
     report = artifact_header(
         "publish_report",
         paper_id=release["paper_id"],
@@ -310,13 +398,44 @@ def main() -> None:
     )
     report.update(
         {
+            "publisher": "publish_note_v2",
             "dry_run": args.dry_run,
             "note_sha256": release["note_sha256"],
-            "target": str(target or (vault / "Research" / release["folder_name"])),
-            "backup": str(backup) if backup else "",
+            "figure_visual_review_sha256": canonical_json_sha256(visual_review),
+            "figure_contact_sheet_sha256": canonical_json_sha256(contact_sheet),
+            "target": str(predicted_target),
+            "audit": str(predicted_audit),
+            "backup": "",
             "materialized_figures": release["materialized"],
         }
     )
+
+    if not args.dry_run:
+        target, backup = publish_transaction(
+            staging_dir=staging_dir,
+            vault=vault,
+            backup_root=backup_root,
+            release=release,
+        )
+        try:
+            audit = archive_publish_audit(
+                vault=vault,
+                target=target,
+                artifacts=artifacts,
+                contact_sheet=contact_sheet,
+                visual_review=visual_review,
+                release=release,
+                report=report,
+            )
+            report["audit"] = str(audit)
+        except Exception:
+            _rollback_after_audit_failure(target=target, backup=backup, vault=vault)
+            raise
+        if backup and backup.exists():
+            _safe_remove_tree(backup, allowed_root=backup_root)
+        if backup_root.exists() and not any(backup_root.iterdir()):
+            backup_root.rmdir()
+
     emit_json(report, args.output or None)
 
 

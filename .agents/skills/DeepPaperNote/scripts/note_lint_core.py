@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Check whether a drafted note meets structure and quality expectations."""
+"""Provide shared language, math, and Markdown lint helpers for lint_note_v2."""
 
 from __future__ import annotations
 
-import argparse
 import re
-from pathlib import Path
 
 REQUIRED_SECTIONS = [
     "核心信息",
@@ -81,14 +79,6 @@ NONSTANDARD_FIGURE_PLACEHOLDER_RE = re.compile(
     )
     """
 )
-
-
-def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__ or "lint note")
-    p.add_argument("--input", required=True, help="Markdown note path.")
-    p.add_argument("--output", default="", help="Output JSON path.")
-    p.add_argument("--paper-id", default="", help="Canonical paper id.")
-    return p
 
 
 def extract_headers(text: str) -> list[str]:
@@ -821,73 +811,3 @@ def mechanism_flow_warnings(text: str) -> list[str]:
 def strip_frontmatter(text: str) -> str:
     """Remove a leading YAML frontmatter block (---...---) if present."""
     return re.sub(r"^---\n.*?\n---\n?", "", text, count=1, flags=re.DOTALL)
-
-
-def main() -> None:
-    from common import emit
-
-    args = parser().parse_args()
-    path = Path(args.input).expanduser().resolve()
-    text = path.read_text(encoding="utf-8")
-    body_text = strip_frontmatter(text)
-    headers = extract_headers(text)
-    missing_sections = find_missing_sections(text)
-    warnings: list[str] = []
-    mixed_issues = mixed_language_issues(text)
-    linebreak_issues = suspicious_mid_sentence_linebreaks(body_text)
-    code_math_issues = suspicious_code_formatted_math(text)
-    math_issues = math_render_issues(text)
-    figure_issues = figure_structure_issues(text)
-    warnings.extend(inspect_figure_callouts(text))
-    for issue in figure_issues:
-        reason = str(issue.get("reason", ""))
-        if reason and reason not in warnings:
-            warnings.append(reason)
-    warnings.extend(front_matter_order_warnings(text))
-    warnings.extend(mechanism_flow_warnings(text))
-    if not body_text.lstrip().startswith("# "):
-        warnings.append("title_heading_missing")
-    if "## " not in text:
-        warnings.append("no_level2_sections")
-    if "### " not in text:
-        warnings.append("no_level3_headings")
-    if len(headers) < 5:
-        warnings.append("too_few_headings")
-    if "[!figure]" not in text and "[FIGURE_PLACEHOLDER]" not in text:
-        warnings.append("no_figure_markers")
-    if len(text.splitlines()) < 20:
-        warnings.append("note_too_short")
-    if mixed_issues:
-        warnings.append("mixed_language_lines_present")
-    if linebreak_issues:
-        warnings.append("suspicious_mid_sentence_linebreaks")
-    if code_math_issues:
-        warnings.append("suspicious_code_formatted_math")
-    if math_issues:
-        warnings.append("math_render_issues_present")
-
-    payload = {
-        "status": "ok",
-        "script": "lint_note.py",
-        "paper_id": args.paper_id,
-        "input_path": str(path),
-        "headers": headers,
-        "missing_sections": missing_sections,
-        "warnings": warnings,
-        "mixed_language_issues": mixed_issues,
-        "linebreak_issues": linebreak_issues,
-        "code_math_issues": code_math_issues,
-        "math_render_issues": math_issues,
-        "figure_structure_issues": figure_issues,
-        "passes_basic_structure": not missing_sections
-        and not {"title_heading_missing", "no_level2_sections", "front_matter_order_invalid"}
-        & set(warnings),
-        "passes_style_gate": not mixed_issues and not linebreak_issues and not code_math_issues,
-        "passes_math_gate": not math_issues,
-        "passes_figure_gate": not figure_issues,
-    }
-    emit(payload, args.output)
-
-
-if __name__ == "__main__":
-    main()

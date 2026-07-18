@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contracts_v2 import artifact_header
 from figure_contracts_v2 import make_figure_manifest
-from plan_figures_release_v2 import build_release_figure_plan_artifact
+from plan_figures_v2 import build_release_figure_plan_artifact
 
 PAPER_ID = "paper-release-bridge"
 RUN_ID = "run-release-bridge"

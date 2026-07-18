@@ -1,248 +1,71 @@
 ---
 name: deeppapernote
-description: Generate a high-quality deep-reading note for a single paper and write it into an Obsidian-style vault. Use when the user gives a paper title, DOI, URL, arXiv ID, Zotero item, or local PDF and wants a polished Markdown note with strong structure, evidence-based analysis, and reliable figures.
+description: Generate an evidence-first Chinese deep-reading note for one paper and publish it into an Obsidian vault. Use when the user provides a paper title, DOI, arXiv ID, URL, Zotero item, or local PDF and asks for a rigorous Markdown research note with verified figures.
 ---
 
 # DeepPaperNote
 
-Use this skill when the user wants one outcome:
-- read one paper carefully
-- generate a high-quality Markdown note
-- save the note into an Obsidian-style vault when configured, or into the current workspace when no vault is configured
+一次只处理一篇论文。目标是生成可长期复用、证据可追溯的中文深读笔记，而不是改写摘要。
 
-Chinese trigger examples:
-- `给这篇论文生成深度笔记`
-- `写一篇高质量论文精读笔记`
-- `把这篇文章整理成 obsidian 笔记`
-- `读这篇论文并生成 md 笔记`
+## 必读路由
 
-This skill is intentionally narrow:
-- it handles one paper at a time
-- it does not update daily reading lists
-- it does not treat a shallow abstract rewrite as a successful output
-- it does not split the public entrypoint into separate setup, troubleshooting, or start commands
+- 每次运行先读 references/workflow.md，遵守 schema v2 阶段、产物和失败策略。
+- 在制定 note plan 和写正文前读 references/writing.md。
+- 在选择、裁剪或发布图表前读 references/figures.md。
+- 在写入 Obsidian、构建链接或发布前读 references/vault.md。
 
-## Core Standard
+## 来源优先级
 
-The finished note must be more than a summary. It should reconstruct the paper's argument:
-- what problem it solves
-- how the task is defined
-- what data or materials it uses
-- how the method or analysis actually works
-- what results matter most
-- what the paper does not prove
-- why the paper is worth keeping
+依次使用：
 
-Default writer persona:
-- a domain researcher writing a replication-oriented lab note
-- technically exact without turning the note into a literal translation
-- explicit about measured facts, model-dependent inference, and unresolved alternatives
-- adapted to the classified paper type rather than assuming an AI-method paper
+1. 用户给出的本地 PDF。
+2. 已配置 Zotero 中的可信条目和本地附件。
+3. DOI、出版社或 arXiv 的开放全文。
+4. Semantic Scholar、OpenAlex 等仅用于补齐元数据。
 
-Supported schema-v2 types include `experimental_physics`, `theoretical_physics`,
-`materials_fabrication`, `ai_method`, `benchmark`, `clinical`, `survey`, and
-`generic`. When classification is uncertain, use `generic`; never default to
-`ai_method`.
+先只读探测 Zotero；不可用时继续其他来源，不安装集成，也不把运行时可用性写进永久笔记。标题存在歧义时先确认论文身份。
 
-## Workflow
+## 正式流程
 
-Follow this order:
-1. resolve the paper identity
-2. collect metadata
-3. acquire the PDF or full text
-4. extract evidence
-5. extract PDF image assets
-6. plan figure placement
-7. build the synthesis bundle
-8. have the model read the bundle and plan the note
-9. have the model write the note
-10. lint the final note — if the lint output contains `passes_style_gate: false`, apply the Style Gate Enforcement rule before advancing to step 11 or 12
-11. perform `final_readability_review` after lint passes
-12. write into Obsidian
+使用 Python 3.10 或更高版本。正式链只有：
 
-This is the required workflow for a normal single-paper note request, not a loose suggestion.
-Unless this skill explicitly marks a stage as optional, required stages must not be silently skipped, reordered into a shortcut, or treated as complete just because a partial artifact already exists.
+1. scripts/run_pipeline_v2.py
+2. 模型读取 synthesis_bundle.json 并写 note_plan.json
+3. 模型在 run staging 目录写单文件双层笔记
+4. scripts/lint_note_v2.py
+5. scripts/record_note_review_v2.py 分别记录质量与可读性复核
+6. scripts/build_figure_contact_sheet_v2.py
+7. scripts/record_figure_visual_review_v2.py
+8. scripts/publish_note_v2.py
+9. scripts/rebuild_paper_navigation.py
+10. scripts/lint_vault.py
 
-Global no-short-circuit rule:
-- do not stop after only the early stages and present the workflow as finished
-- do not treat slowness, inconvenience, or temporary uncertainty as permission to bypass a required stage
-- do not replace the declared workflow with an improvised shortcut
-- if a required stage fails, only do one of three things:
-  - retry that stage
-  - enter a fallback that is explicitly allowed by this skill
-  - stop and report which stage is blocked and which downstream required stages remain incomplete
-- do not describe the whole task as complete while required downstream stages are still pending
+run_pipeline_v2.py 接受 --input 或 --input-record，并保留 --run-id、--workdir、--vault-root、--supplement、--offline、--max-pages。所有运行产物写入 .local/deeppapernote/runs/<run_id>/。
 
-Completion-language rule:
-- say `笔记已完成` only when the required workflow is actually complete
-- say `已生成草稿` when drafting is done but lint, final readability review, or save is still pending
-- say `已通过校验` only when lint has actually been run and passed
-- say `已保存到 Obsidian` only when the write step has actually succeeded
-- do not treat `lint 已通过` as equivalent to `整篇笔记已经润色完成`
-- if final readability review is still pending, explicitly say the draft passed script lint but has not finished final language review
-- if the workflow stopped early, name the current stage and the still-missing required stages instead of using completion language
-- lint is a floor, not the writing objective
+Zotero 命中但未暴露附件路径时，可用 scripts/locate_zotero_attachment.py。需要生成可信输入 JSON 时用 scripts/create_input_record.py。只有具体环境问题阻塞时才用 scripts/check_environment.py。
 
-Read [references/workflow.md](references/workflow.md) for the full pipeline and data contracts.
-Read [references/architecture.md](references/architecture.md) for the separation between the reusable core workflow and the platform-adapter layer.
-Read [references/evidence-first.md](references/evidence-first.md) before drafting a high-quality note so that the note is planned around evidence rather than headings alone.
-Read [references/deep-analysis.md](references/deep-analysis.md) before writing the final note body.
-Read [references/final-writing.md](references/final-writing.md) before turning the structured artifacts into the final user-facing note.
-Read [references/model-synthesis.md](references/model-synthesis.md) for the preferred model-first execution loop after the synthesis bundle is ready.
+## 不可绕过的门禁
 
-## Tool and Source Priority
+- 每个 v2 产物必须共享 schema_version、paper_id 和 run_id，并显式记录 status 与 failures。
+- PDF 或全文证据不足时停止，或发布首屏明确标记的 degraded 笔记；不得冒充完整深读。
+- 脚本负责解析、取证、校验和发布；模型负责论文理解、note plan、技术解释和最终中文写作。
+- note plan 必须关联 evidence_id；核心结论必须给出主文或补充材料页码、图表或公式锚点。
+- 每个重要图表必须在运行记录中得到 inserted、placeholder 或 omitted 决策。永久笔记只显示可靠的 inserted 图片与自然图注。
+- lint 失败时修改并重跑；可读性复核修改正文后必须再次 lint。
+- 质量、可读性和图像复核必须绑定最终笔记或图像产物的哈希。正文一旦修改，旧复核立即失效。
+- publish_note_v2.py 只向 Research/<规范标题>/ 写入 笔记.md 与 images/，并把紧凑 JSON 审计归档到 .local/deeppapernote/published/<run_id>/。
+- 发布后重建导航并运行 Vault lint；任一门禁失败都不得声称完成。
 
-Prefer the strongest available source in this order:
-1. local PDF path given by the user
-2. local Zotero item and local Zotero attachment if available
-3. DOI and publisher metadata
-4. arXiv or open-access PDF sources
-5. Semantic Scholar or OpenAlex for metadata backfill
+## 输出边界
 
-At run start, perform a read-only capability check for an already configured
-Zotero provider. If it responds, use it as an optional local metadata and navigation
-source. If it is absent or unavailable, continue from the local PDF, DOI, arXiv
-identifier, or URL. Store provider availability only in the run manifest; never write
-`Zotero not available` or other transient integration status into a permanent note.
-Do not install a Zotero connector as part of a normal note run.
+默认目标是已配置的 Obsidian Vault，目录为 Research/<规范标题>/笔记.md 和同级 images/。即使没有可靠图片，也必须创建 images/。
 
-Local-library-first rule (applies only when the Zotero check above succeeds):
-- search the local Zotero library first using the paper title, DOI, or arXiv id
-- If Zotero finds the paper, treat that result as the canonical identity resolution step.
-- If the attachment path is not exposed by the integration, use `scripts/locate_zotero_attachment.py` with the attachment key and filename to find the local PDF under the user's Zotero storage.
-- If a local attachment path is available, pass it forward as the preferred PDF source.
-- If no local attachment is found, still use the library-resolved metadata to avoid title ambiguity, then fall back to network PDF acquisition only for the file itself.
-- Do not let a weaker title-only internet match override a confident local-library hit.
+如果完全没有配置 Vault，先询问用户目标路径；得到明确答复前不要写入 workspace fallback。已配置 Vault 但无写权限时请求权限，不能静默改写到其他目录。
 
-## Output Rules
+永久笔记不得出现图片候选、裁剪坐标、哈希、QA 状态、隐藏 figure 注释、可见 placeholder、Zotero 可用性或本机绝对路径。
 
-- The default output is a Markdown note written into the Obsidian vault when configured.
-- Workspace fallback is allowed only when no Obsidian vault is configured at all.
-- Before using workspace fallback, you must ask the user: "I don't see an Obsidian vault configured. Do you have a vault path you'd like me to save this note to? If yes, please provide the path. If no, I'll save to the current workspace instead." Do not write anywhere until the user responds.
-- If an Obsidian vault is configured, DeepPaperNote must treat that vault as the required save target rather than silently switching output roots.
-- If the configured vault or its paper-local subdirectories are outside the current writable scope, DeepPaperNote must ask the user for permission escalation instead of downgrading to workspace output.
-- If the user refuses that permission escalation, DeepPaperNote must clearly report that the note has not been saved into Obsidian yet.
-- After such a refusal, DeepPaperNote may save to the workspace only if it asks again and receives explicit user consent for that fallback.
-- By default, each paper should be written into its own same-name folder, with the note and images stored together.
-- The note should never default to the bare `Research` root. Choose a paper folder first.
-- Do not add domain/category directory layers by default; use `Research/<paper_title>/笔记.md` unless the user explicitly asks for another layout.
-- The `<paper_title>` folder should preserve the canonical paper title exactly, except for removing characters that are invalid in local filesystem paths.
-- A normal note-generation request should complete in one pass: note text, figure decisions, image materialization when confident, and final save.
-- Do not stop after a text-only draft just to ask whether the user wants figures inserted. Finish the figure replacement decision inside the same task unless the user explicitly asked for text only.
-- Always create the paper-local `images/` folder during final save, even if no high-confidence images were materialized.
-- The `images/` folder is part of the required save protocol, not an optional cleanup step. If permission is missing, request it; do not skip the directory.
-- Do not present a workspace write as if the Obsidian save already succeeded.
-- The note must use real heading levels: `#`, `##`, and `###`.
-- The note should include `原文摘要翻译` near the beginning when abstract metadata is available, before `一句话总结`.
-- When abstract metadata is available, `原文摘要翻译` should directly translate the original paper abstract into Chinese rather than restating it as your own summary.
-- The `原文摘要翻译` section itself should be Chinese-only; do not place English abstract sentences or English paragraph excerpts in that section.
-- Do not mix later judgments, innovation summaries, or hindsight explanations into `原文摘要翻译`; keep it as the original abstract translated into Chinese.
-- The note should include a dedicated `创新点` section immediately after `原文摘要翻译` and before `一句话总结`.
-- The `创新点` section should not be empty praise. It should enumerate the paper's actual innovations and briefly explain why each one matters.
-- High-quality notes should usually contain multiple meaningful `###` subheadings in the technical sections when the paper is non-trivial.
-- Every high-value figure/table must receive an `inserted`, `placeholder`, or `omitted` decision in the run artifacts before publication. Candidate IDs, rejection reasons, crop details, hashes, and QA records are not reader-facing note content.
-- If a decision is `inserted`, place a direct Obsidian embed under the relevant analytical section and add a short natural caption explaining what it helps the reader understand. Preserve the original paper numbering such as `Fig. 1` or `Table 2`.
-- If no trustworthy image can be inserted, do not render a placeholder, callout, extraction status, or apology in the permanent note. Keep the decision and its reason in `figure_decisions.json`; the analysis prose must remain independently readable.
-- Permanent notes must never contain `[!figure]`, `建议位置`, `放置原因`, `当前状态`, hidden figure-target comments, candidate IDs, crop coordinates, hashes, visual-review language, or other pipeline metadata.
-- Real images may be used only when they clearly match the corresponding paper figure/table. When inserting one, prefer the `obsidian_embed` returned by `scripts/materialize_figure_asset.py`.
-- The note must pass a style gate: no mixed Chinese-English prose lines except stable proper nouns or citation metadata.
-- Style gate enforcement: when `lint_note.py` output contains `passes_style_gate: false`, fix the reported issues and re-run lint. Keep fixing and re-running until lint passes — multiple rounds are normal and expected. Do not decide that any failure is an acceptable exception — proper nouns, math formulas, and citation metadata are not automatic exemptions. Only escalate to the user if the same failures appear unchanged across multiple rounds with no reduction, indicating the model is unable to make further progress independently.
-- If PDF or evidence quality is insufficient for a real deep note, fail closed or clearly label the output as degraded.
+## 完成与 Git
 
-Model-first rule:
-- scripts may gather and structure evidence
-- scripts must not be the primary mechanism for understanding the paper
-- final paper understanding and note writing belong to the model
-- before writing the final note, create an explicit short `note_plan` artifact rather than relying on hidden planning only
-- prefer a compact structured plan such as `<note_plan>...</note_plan>` or an equivalent temporary planning file
-- do not require or expose a long free-form `<thinking>` block
-- for technical papers, prefer replication-grade explanation over high-level summary
-- if formulas, objectives, or complexity expressions are central, include the key ones in the final note
-- render math as `$...$` or `$$...$$`, not as inline code or fenced code blocks
-- before final save, explicitly self-review whether the note contains enough technical detail, key numbers, and any necessary formulas
-- after script lint passes, reread the full note once more for readability; do not stop at formal compliance only
-- in that final readability review, ordinary English phrase leftovers should usually be rewritten into natural Chinese, while stable proper nouns may remain in English
-- do not use the final readability review to invent new facts, empty filler text, or shallower but safer wording just to satisfy lint
+只有解析、取证、note plan、正文、lint、两类文字复核、图像决策、原子发布、导航和 Vault lint 全部完成后，才说笔记已完成并已保存到 Obsidian。中途停止时准确列出已完成、阻塞和待完成阶段。
 
-Use [references/note-quality.md](references/note-quality.md) for quality checks.
-Use [references/paper-types.md](references/paper-types.md) for domain adaptation.
-Use [references/obsidian-format.md](references/obsidian-format.md) for Markdown and vault conventions.
-Use [references/figure-placement.md](references/figure-placement.md) for figure-decision and reader-facing placement rules.
-Use [references/evidence-first.md](references/evidence-first.md) when deciding how to turn bundle evidence into an actual note plan.
-Use [references/deep-analysis.md](references/deep-analysis.md) when the user expects a note that feels like a real long-term research note.
-Use [references/metadata-sources.md](references/metadata-sources.md) when metadata is incomplete.
-Use [references/architecture.md](references/architecture.md) when deciding whether a change belongs in the reusable core or only in the platform-adapter layer.
-Use [references/final-writing.md](references/final-writing.md) when drafting the final note in natural language.
-
-## Scripts
-
-Use these bundled scripts rather than rebuilding the workflow from scratch:
-- `scripts/check_environment.py`
-- `scripts/create_input_record.py`
-- `scripts/locate_zotero_attachment.py`
-- `scripts/resolve_paper.py`
-- `scripts/run_pipeline.py`
-- `scripts/collect_metadata.py`
-- `scripts/fetch_pdf.py`
-- `scripts/extract_evidence.py`
-- `scripts/extract_pdf_assets.py`
-- `scripts/plan_figures.py`
-- `scripts/build_synthesis_bundle.py`
-- `scripts/lint_note.py`
-- `scripts/materialize_figure_asset.py`
-- `scripts/write_obsidian_note.py`
-
-Preferred usage pattern:
-1. if local bibliography integration is available, search the local Zotero library first
-2. if the library resolves the paper, inspect child attachments; if needed use `scripts/locate_zotero_attachment.py` to find the local PDF
-3. use `scripts/create_input_record.py` to materialize a trusted JSON input record
-4. run `scripts/run_pipeline.py` on the JSON record or original exact source to produce the bundle
-5. read the bundle yourself
-6. write the note in your own words
-7. lint the note
-8. write it into Obsidian only after lint passes and the final readability review is complete
-
-Python interpreter rule:
-- DeepPaperNote requires Python `>=3.10`.
-- Before running repository scripts, check the interpreter version instead of assuming the current shell default is compatible.
-- If the default `python3` is below `3.10`, automatically look for another available interpreter that satisfies the requirement, such as `python3.12`, `python3.11`, `python3.10`, `/opt/anaconda3/bin/python3`, `/opt/homebrew/bin/python3`, or `/usr/local/bin/python3`.
-- Use the first compatible interpreter you find and continue with that interpreter for the repository scripts in the current task.
-- If no compatible interpreter is available, stop and clearly tell the user which interpreter was found, which version it reported, and that DeepPaperNote requires Python `>=3.10`.
-
-Troubleshooting rule:
-- use `scripts/check_environment.py` only when a concrete dependency or integration question is blocking execution
-- explain required dependencies, optional enhancements, and downgrade behavior directly rather than redirecting the skill into a separate troubleshooting workflow
-- do not feature environment inspection as a public pseudo-command surface
-
-Current status:
-- the single-paper deterministic core pipeline is implemented as an MVP
-- `scripts/run_pipeline.py` now defaults to building a model-facing synthesis bundle
-- `scripts/write_obsidian_note.py` can write the final note into a target vault
-- patch the scripts rather than replacing the workflow ad hoc
-
-## Limits
-
-- If the paper identity is ambiguous, confirm before writing.
-- If the PDF is unavailable and full-text evidence is too thin, do not present a note as if it were a full deep read.
-- Decision-first figure planning is required; unresolved decisions stay in run artifacts and must never reduce textual coverage.
-
-## Schema v2 publication contract
-
-For this Vault, read [references/v2-workflow.md](references/v2-workflow.md) and
-[references/vault-v2.md](references/vault-v2.md) before acting. They are authoritative
-where legacy MVP guidance differs.
-
-Use this final chain:
-
-1. `scripts/run_pipeline_final_v2.py`
-2. model-authored single-file double-layer note in the run staging directory
-3. `scripts/lint_note_final_v2.py`
-4. `scripts/record_note_review_v2.py` for independent quality and readability reviews
-5. `scripts/build_figure_contact_sheet_v2.py`
-6. `scripts/record_figure_visual_review_v2.py`
-7. `scripts/publish_note_final_v2.py` for atomic publication
-8. `scripts/lint_vault.py` after navigation and links are rebuilt
-
-All stage artifacts must use schema v2 and share `paper_id` and `run_id`. Run outputs
-belong under `.local/deeppapernote/runs/<run_id>/`. The unversioned MVP scripts remain
-compatibility tools and must not silently publish a schema-v2 note.
+保存并通过校验后询问用户是否同步 GitHub。用户确认前不得执行 git add、git commit 或 git push；确认后遵守仓库根 AGENTS.md 的 allowlist 和检查流程。

@@ -9,7 +9,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from extract_evidence_contract_v2 import infer_release_profile
+from extract_evidence_v2 import infer_release_profile
 
 
 def test_universal_chiral_luttinger_paper_remains_experimental() -> None:

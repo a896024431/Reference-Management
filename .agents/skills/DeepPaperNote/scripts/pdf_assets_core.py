@@ -1,28 +1,24 @@
 #!/usr/bin/env python3
-"""Extract page-level PDF assets for later model-side semantic figure matching.
+"""Provide low-level PDF visual extraction helpers for extract_pdf_assets_v2.
 
 Two extraction strategies run in parallel:
-1. xref-level: extract raw embedded image objects (legacy behaviour).
+1. xref-level: extract raw embedded image objects (xref behavior).
 2. figure-level: locate Figure/Table captions on each page, compute a bounding
    box that covers the visual content above the caption, and render that region
    from the page pixmap at high DPI.  This produces complete, human-readable
    figures even when the PDF stores them as many small xref fragments or as
    pure vector art.
 
-Downstream consumers (plan_figures.py, materialize_figure_asset.py) should
-prefer figure-level assets when available.
+The schema-v2 extractor should prefer figure-level assets when available.
 """
 
 from __future__ import annotations
 
-import argparse
 import io
 import re
 from pathlib import Path
 
 from common import (
-    default_assets_dir,
-    emit,
     enrich_metadata,
     fitz,
     maybe_load_json_record,
@@ -160,32 +156,6 @@ def _classify_visual_quality(
 def _classify_caption_kind(label: str) -> str:
     """Return 'table' if the caption label starts with 'Table', else 'figure'."""
     return "table" if label.strip().lower().startswith("table") else "figure"
-
-
-def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__ or "extract pdf assets")
-    p.add_argument(
-        "--input",
-        required=True,
-        help="Fetch JSON path, metadata JSON path, JSON string, or raw paper reference.",
-    )
-    p.add_argument("--output", default="", help="Output JSON path.")
-    p.add_argument("--assets-dir", default="", help="Optional explicit assets directory.")
-    p.add_argument("--max-pages", type=int, default=24, help="Maximum pages to scan.")
-    p.add_argument(
-        "--min-searchable-chars",
-        type=int,
-        default=100,
-        help="Minimum characters for a page to count as searchable text.",
-    )
-    p.add_argument("--ocr-dpi", type=int, default=300, help="DPI used when OCR fallback is needed.")
-    p.add_argument(
-        "--figure-dpi",
-        type=int,
-        default=FIGURE_RENDER_DPI,
-        help="DPI for figure-level page rendering.",
-    )
-    return p
 
 
 def ensure_record(input_value: str) -> dict:
@@ -1000,84 +970,3 @@ def extract_figure_regions(
         )
 
     return assets
-
-
-def main() -> None:
-    args = parser().parse_args()
-    record = ensure_record(args.input)
-    pdf_path = Path(str(record.get("pdf_path", "")).strip()).expanduser()
-    if not pdf_path.exists():
-        from_fetch = maybe_load_json_record(args.input) or {}
-        pdf_candidate = str(from_fetch.get("pdf_path", "")).strip()
-        if pdf_candidate:
-            pdf_path = Path(pdf_candidate).expanduser()
-    if not pdf_path.exists():
-        raise SystemExit("extract_pdf_assets.py requires a resolvable local PDF path.")
-    if fitz is None:
-        raise SystemExit("extract_pdf_assets.py requires PyMuPDF (`fitz`).")
-
-    asset_root = (
-        Path(args.assets_dir).expanduser().resolve()
-        if args.assets_dir
-        else default_assets_dir(record)
-    )
-    images_dir = asset_root / "images"
-    images_dir.mkdir(parents=True, exist_ok=True)
-
-    figure_dpi = args.figure_dpi
-
-    doc = fitz.open(pdf_path.resolve())
-    page_records: list[dict] = []
-    image_assets: list[dict] = []
-    figure_assets: list[dict] = []
-    try:
-        page_limit = min(len(doc), args.max_pages)
-        for idx in range(page_limit):
-            page = doc[idx]
-            page_number = idx + 1
-            text = normalize_whitespace(page.get_text("text"))
-            searchable_chars = len(text)
-            extraction_method = "text" if searchable_chars >= args.min_searchable_chars else "none"
-            ocr_text = ""
-            if extraction_method == "none":
-                ocr_text = ocr_page(page, args.ocr_dpi)
-                if ocr_text:
-                    extraction_method = "ocr"
-            page_images = extract_page_images(doc, page, page_number, images_dir)
-            image_assets.extend(page_images)
-
-            page_figures = extract_figure_regions(page, page_number, images_dir, dpi=figure_dpi)
-            figure_assets.extend(page_figures)
-
-            page_records.append(
-                {
-                    "page_number": page_number,
-                    "searchable_text_chars": searchable_chars,
-                    "text_extraction_method": extraction_method,
-                    "ocr_used": extraction_method == "ocr",
-                    "image_count": len(page_images),
-                    "figure_count": len(page_figures),
-                    "page_text": text or ocr_text,
-                    "text_preview": (text or ocr_text)[:240],
-                }
-            )
-    finally:
-        doc.close()
-
-    payload = {
-        "status": "ok",
-        "script": "extract_pdf_assets.py",
-        "paper_id": record.get("paper_id", ""),
-        "pdf_path": str(pdf_path.resolve()),
-        "asset_root": str(asset_root),
-        "images_dir": str(images_dir),
-        "page_assets": page_records,
-        "image_assets": image_assets,
-        "figure_assets": figure_assets,
-        "ocr_available": bool(pytesseract and Image),
-    }
-    emit(payload, args.output)
-
-
-if __name__ == "__main__":
-    main()

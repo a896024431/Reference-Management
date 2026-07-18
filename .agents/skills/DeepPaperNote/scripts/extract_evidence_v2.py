@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract full-document, page-aware evidence from a schema-v2 paper record."""
+"""Extract canonical, full-document schema-v2 evidence for one paper."""
 
 from __future__ import annotations
 
@@ -264,6 +264,65 @@ def infer_paper_type_v2(title: str, abstract: str = "") -> tuple[str, str]:
     if any(token in lower for token in humanities_tokens):
         return "humanities", "humanities/social-science terminology"
     return "generic", "no specialized profile reached a reliable threshold"
+
+def infer_release_profile(
+    metadata: dict[str, Any], units: list[dict[str, Any]]
+) -> tuple[str, str]:
+    """Classify from full-text evidence, preferring experimental proof over title heuristics."""
+    title = str(metadata.get("title", ""))
+    abstract = str(metadata.get("abstract", ""))
+    evidence_text = " ".join(
+        str(unit.get("text", "")) for unit in units if isinstance(unit, dict)
+    )
+    combined = f"{title} {abstract} {evidence_text}".lower()
+    title_lower = title.lower()
+    if any(
+        token in title_lower
+        for token in (
+            "nanopattern",
+            "nanofabrication",
+            "lithography",
+            "anodic oxidation",
+            "device fabrication",
+        )
+    ):
+        return "materials_fabrication", "title identifies a fabrication/process paper"
+
+    physics_signals = (
+        "quantum hall",
+        "graphene",
+        "quasiparticle",
+        "conductance",
+        "heterostructure",
+        "point contact",
+        "electron transport",
+        "condensed matter",
+        "luttinger",
+    )
+    experimental_signals = (
+        "we measure",
+        "we measured",
+        "measurement",
+        "experimentally",
+        "we observe",
+        "we observed",
+        "conductance",
+        "resistance",
+        "temperature dependence",
+        "bias voltage",
+        "gate voltage",
+        "device",
+        "data show",
+    )
+    physics_score = sum(token in combined for token in physics_signals)
+    experimental_score = sum(token in combined for token in experimental_signals)
+    if physics_score >= 1 and experimental_score >= 2:
+        return (
+            "experimental_physics",
+            f"full text contains {experimental_score} independent measurement/device signals; "
+            "theoretical interpretation does not override the experimental evidence chain",
+        )
+    return infer_paper_type_v2(title, abstract)
 
 
 def normalize_heading_v2(line: str) -> str:
@@ -593,6 +652,14 @@ def build_evidence_artifact(
                 }
             )
 
+    results_evidence = _select(units, ("results", "numeric"))
+    results_evidence.sort(
+        key=lambda item: (
+            0 if item.get("source_section") == "results" else 1,
+            int(item.get("page", 0)),
+        )
+    )
+
     pack = {
         "paper_id": paper_id,
         "paper_type": paper_type,
@@ -609,7 +676,7 @@ def build_evidence_artifact(
         "data_evidence": _select(units, ("data",)),
         "method_evidence": _select(units, ("protocol", "theory", "fabrication")),
         "mechanism_evidence": _select(units, ("protocol", "theory", "fabrication")),
-        "results_evidence": _select(units, ("results", "numeric")),
+        "results_evidence": results_evidence,
         "ablation_evidence": [],
         "limitations_evidence": _select(units, ("limitations",)),
         "equation_candidates": equation_candidates[:16],
@@ -641,10 +708,66 @@ def build_evidence_artifact(
     return artifact
 
 
+
+def build_contract_evidence(
+    paper_record: dict[str, Any],
+    *,
+    max_pages: int = 0,
+    max_chars_per_chunk: int = 900,
+) -> dict[str, Any]:
+    """Build the only supported evidence artifact and enforce the release profile contract."""
+    artifact = build_evidence_artifact(
+        paper_record,
+        max_pages=max_pages,
+        max_chars_per_chunk=max_chars_per_chunk,
+    )
+    pack = artifact["evidence_pack"]
+
+    metadata = paper_record["paper_record"]["metadata"]
+    paper_type, rationale = infer_release_profile(metadata, pack.get("evidence_units", []))
+    pack["paper_type"] = paper_type
+    pack["paper_type_rationale"] = rationale
+    artifact["summary"]["paper_type"] = paper_type
+    artifact["summary"]["paper_type_rationale"] = rationale
+
+    available = set(pack.get("coverage", {}).get("available", []))
+    required = PROFILE_REQUIREMENTS[paper_type]
+    missing = [kind for kind in required if kind not in available]
+    coverage = dict(pack.get("coverage", {}))
+    coverage.update(
+        {
+            "required": list(required),
+            "missing": missing,
+            "ratio": round((len(required) - len(missing)) / max(len(required), 1), 3),
+        }
+    )
+    pack["coverage"] = coverage
+    artifact["summary"]["coverage"] = coverage
+    failures = [
+        item
+        for item in artifact.get("failures", [])
+        if not str(item).startswith("missing_required_evidence:")
+    ]
+    if missing:
+        failures.append(f"missing_required_evidence:{','.join(missing)}")
+    artifact["failures"] = failures
+    pack["extraction_failures"] = failures
+    if not pack.get("page_records") or missing:
+        artifact["status"] = "fail"
+    elif failures:
+        artifact["status"] = "degraded"
+    else:
+        artifact["status"] = "pass"
+    pack["evidence_quality"] = {
+        "pass": "high",
+        "degraded": "medium",
+        "fail": "low",
+    }[artifact["status"]]
+    return artifact
 def main() -> None:
     args = parser().parse_args()
     source = load_json_object(args.input)
-    artifact = build_evidence_artifact(
+    artifact = build_contract_evidence(
         source,
         max_pages=args.max_pages,
         max_chars_per_chunk=args.max_chars_per_chunk,

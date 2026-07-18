@@ -13,7 +13,7 @@ if str(SCRIPTS) not in sys.path:
 
 from build_synthesis_bundle_v2 import build_bundle
 from contracts_v2 import ContractError, artifact_header, sha256_text
-from lint_note_release_v2 import build_release_lint
+from lint_note_v2 import build_release_lint
 from publish_note_v2 import validate_release
 from record_note_review_v2 import build_review_artifact
 from validate_note_plan_v2 import build_note_plan_artifact

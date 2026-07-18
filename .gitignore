@@ -8,7 +8,7 @@
 !.gitattributes
 !AGENTS.md
 !README.md
-!*.md
+!更新报告.md
 
 # Repo-local DeepPaperNote skill.
 !.agents/
@@ -81,7 +81,7 @@ node_modules/
 .coverage
 htmlcov/
 
-# DeepPaperNote v2 tracked Vault/CI assets.
+# Tracked Vault and CI assets.
 !.github/
 !.github/workflows/
 !.github/workflows/deeppapernote-v2.yml
