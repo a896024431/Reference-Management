@@ -5,67 +5,55 @@ description: Generate an evidence-first Chinese deep-reading note for one paper 
 
 # DeepPaperNote
 
-一次只处理一篇论文。目标是生成可长期复用、证据可追溯的中文深读笔记，而不是改写摘要。
+一次只处理一篇论文。目标是生成可长期复用、证据可追溯的中文深读笔记，而不是摘要改写。
 
 ## 必读路由
 
-- 每次运行先读 references/workflow.md，遵守 schema v2 阶段、产物和失败策略。
-- 在制定 note plan 和写正文前读 references/writing.md。
-- 在选择、裁剪或发布图表前读 references/figures.md。
-- 在写入 Obsidian、构建链接或发布前读 references/vault.md。
+- 每次运行先读 `references/workflow.md`，遵守 schema v2 阶段、产物和失败策略。
+- 制定 note plan 和写正文前读 `references/writing.md`。
+- 选择、裁剪或发布图表前读 `references/figures.md`。
+- 写入 Obsidian、构建链接或发布前读 `references/vault.md`。
 
 ## 来源优先级
 
-依次使用：
+依次使用用户本地 PDF、可信 Zotero 本地附件、DOI/出版社或 arXiv 开放全文；Semantic Scholar、OpenAlex 等只补元数据。Zotero 只读探测，不自动安装集成，也不把运行时状态写进笔记。
 
-1. 用户给出的本地 PDF。
-2. 已配置 Zotero 中的可信条目和本地附件。
-3. DOI、出版社或 arXiv 的开放全文。
-4. Semantic Scholar、OpenAlex 等仅用于补齐元数据。
+标题检索只有在 DOI、arXiv 或标题/年份去重后剩下唯一可信身份时才能继续；多个候选时停止并请用户提供 DOI、URL 或 PDF。
 
-先只读探测 Zotero；不可用时继续其他来源，不安装集成，也不把运行时可用性写进永久笔记。标题存在歧义时先确认论文身份。
+## 唯一正式流程
 
-## 正式流程
+使用 Python 3.10 或更高版本，并确保 PyMuPDF 可导入：
 
-使用 Python 3.10 或更高版本。正式链只有：
+1. `scripts/run_pipeline_v2.py`
+2. 模型读取 `synthesis_bundle.json` 并写 `note_plan.json`
+3. `scripts/validate_note_plan_v2.py`
+4. 模型在 run staging 目录写单文件双层笔记
+5. `scripts/lint_note_v2.py`
+6. 另一代理或人工分别完成质量与可读性复核，再用 `scripts/record_note_review_v2.py` 记录
+7. `scripts/build_figure_contact_sheet_v2.py`
+8. `scripts/record_figure_visual_review_v2.py`
+9. `scripts/publish_note_v2.py`
+10. `scripts/rebuild_paper_navigation.py`
+11. `scripts/lint_vault.py`
 
-1. scripts/run_pipeline_v2.py
-2. 模型读取 synthesis_bundle.json 并写 note_plan.json
-3. 模型在 run staging 目录写单文件双层笔记
-4. scripts/lint_note_v2.py
-5. scripts/record_note_review_v2.py 分别记录质量与可读性复核
-6. scripts/build_figure_contact_sheet_v2.py
-7. scripts/record_figure_visual_review_v2.py
-8. scripts/publish_note_v2.py
-9. scripts/rebuild_paper_navigation.py
-10. scripts/lint_vault.py
+`run_pipeline_v2.py` 接受 `--input` 或 `--input-record`，并保留 `--run-id`、`--workdir`、`--vault-root`、`--supplement`、`--offline`、`--max-pages`。所有中间产物写入 `.local/deeppapernote/runs/<run_id>/`。
 
-run_pipeline_v2.py 接受 --input 或 --input-record，并保留 --run-id、--workdir、--vault-root、--supplement、--offline、--max-pages。所有运行产物写入 .local/deeppapernote/runs/<run_id>/。
-
-Zotero 命中但未暴露附件路径时，可用 scripts/locate_zotero_attachment.py。需要生成可信输入 JSON 时用 scripts/create_input_record.py。只有具体环境问题阻塞时才用 scripts/check_environment.py。
+需要可信输入 JSON 时使用 `scripts/create_input_record.py`；Zotero 命中但未暴露附件路径时可用 `scripts/locate_zotero_attachment.py`。
 
 ## 不可绕过的门禁
 
-- 每个 v2 产物必须共享 schema_version、paper_id 和 run_id，并显式记录 status 与 failures。
-- PDF 或全文证据不足时停止，或发布首屏明确标记的 degraded 笔记；不得冒充完整深读。
-- 脚本负责解析、取证、校验和发布；模型负责论文理解、note plan、技术解释和最终中文写作。
-- note plan 必须关联 evidence_id；核心结论必须给出主文或补充材料页码、图表或公式锚点。
-- 每个重要图表必须在运行记录中得到 inserted、placeholder 或 omitted 决策。永久笔记只显示可靠的 inserted 图片与自然图注。
-- lint 失败时修改并重跑；可读性复核修改正文后必须再次 lint。
-- 质量、可读性和图像复核必须绑定最终笔记或图像产物的哈希。正文一旦修改，旧复核立即失效。
-- publish_note_v2.py 只向 Research/<规范标题>/ 写入 笔记.md 与 images/，并把紧凑 JSON 审计归档到 .local/deeppapernote/published/<run_id>/。
-- 发布后重建导航并运行 Vault lint；任一门禁失败都不得声称完成。
+- paper record、evidence pack 和所有发布产物必须共享 `schema_version`、`paper_id`、`run_id`，正式发布状态必须为 `pass`。
+- 任一 PDF 解析失败、全文被 `--max-pages` 截断、OCR 文本覆盖不足或关键证据缺失时停止；不生成或发布摘要型、degraded 笔记。
+- note plan 必须包含唯一结构中的九个字段；所有关键条目绑定存在的 `evidence_id`。
+- 关键结论逐条包含主文或补充材料页码；lint 同时拒绝重复英文题名、多个 H1、失效页内链接和数学环境外裸 LaTeX 命令。
+- 质量与可读性审阅者必须不同于作者，来源只能是 `subagent` 或 `human`，各项至少 4/5、无遗留问题，并绑定最终笔记哈希。
+- 每个重要视觉记录 `inserted`、`placeholder` 或 `omitted`；永久笔记只显示可靠图片和自然图注。
+- 发布器只接受 `note_status: polished`，并从完整文档和图像决策推导、核对 `evidence_level` 与 `figure_status`。
+- staging 顶层只能有 `笔记.md` 与 `images/`；`images/` 内只能有支持的图片文件。
+- 正文或图片一旦修改，旧 lint、复核与发布快照立即失效。
 
-## 输出边界
+## 输出与 Git
 
-默认目标是已配置的 Obsidian Vault，目录为 Research/<规范标题>/笔记.md 和同级 images/。即使没有可靠图片，也必须创建 images/。
+正式目录固定为 `Research/<规范标题>/笔记.md` 和同级 `images/`；无可靠图片时也创建空目录。运行审计只写入 `.local/deeppapernote/published/<run_id>/`。永久笔记不得出现候选 ID、裁剪坐标、哈希、QA 状态、可见 placeholder、运行时消息或本机绝对路径。
 
-如果完全没有配置 Vault，先询问用户目标路径；得到明确答复前不要写入 workspace fallback。已配置 Vault 但无写权限时请求权限，不能静默改写到其他目录。
-
-永久笔记不得出现图片候选、裁剪坐标、哈希、QA 状态、隐藏 figure 注释、可见 placeholder、Zotero 可用性或本机绝对路径。
-
-## 完成与 Git
-
-只有解析、取证、note plan、正文、lint、两类文字复核、图像决策、原子发布、导航和 Vault lint 全部完成后，才说笔记已完成并已保存到 Obsidian。中途停止时准确列出已完成、阻塞和待完成阶段。
-
-保存并通过校验后询问用户是否同步 GitHub。用户确认前不得执行 git add、git commit 或 git push；确认后遵守仓库根 AGENTS.md 的 allowlist 和检查流程。
+只有全部门禁、原子发布、导航重建和 Vault lint 完成后，才说笔记已完成。保存后询问用户是否同步 GitHub；确认前不得执行 `git add`、`git commit` 或 `git push`。

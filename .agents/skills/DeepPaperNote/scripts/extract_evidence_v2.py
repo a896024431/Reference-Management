@@ -343,13 +343,14 @@ def match_heading_v2(line: str) -> str | None:
     return None
 
 
-def read_pages(path: Path, *, max_pages: int = 0) -> list[dict[str, Any]]:
+def read_pages(path: Path, *, max_pages: int = 0) -> tuple[list[dict[str, Any]], int]:
     if fitz is None:
         raise RuntimeError("PyMuPDF/fitz is required for page-aware evidence extraction")
     document = fitz.open(path)
     pages: list[dict[str, Any]] = []
+    total_pages = len(document)
     try:
-        limit = len(document) if max_pages <= 0 else min(len(document), max_pages)
+        limit = total_pages if max_pages <= 0 else min(total_pages, max_pages)
         for index in range(limit):
             text = document[index].get_text("text")
             pages.append(
@@ -361,7 +362,7 @@ def read_pages(path: Path, *, max_pages: int = 0) -> list[dict[str, Any]]:
             )
     finally:
         document.close()
-    return pages
+    return pages, total_pages
 
 
 def segment_pages(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -517,6 +518,8 @@ def build_evidence_artifact(
     max_chars_per_chunk: int = 900,
 ) -> dict[str, Any]:
     validate_paper_record_artifact(paper_record_artifact)
+    if max_pages < 0:
+        raise ValueError("max_pages must be non-negative")
     paper_id = paper_record_artifact["paper_id"]
     run_id = paper_record_artifact["run_id"]
     record = paper_record_artifact["paper_record"]
@@ -537,16 +540,34 @@ def build_evidence_artifact(
     candidate_chunks: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     documents = record.get("documents", [])
+    if not any(document.get("role") == "main" for document in documents):
+        failures.append("main_document_missing")
     for document in documents:
         path = Path(str(document.get("path", ""))).expanduser()
         if not path.exists():
             failures.append(f"document_missing:{document.get('document_id', '')}")
             continue
         try:
-            pages = read_pages(path.resolve(), max_pages=max_pages)
+            pages, total_pages = read_pages(path.resolve(), max_pages=max_pages)
         except Exception as exc:
             failures.append(f"document_parse_failed:{document.get('document_id', '')}:{exc}")
             continue
+        document_id = str(document.get("document_id", ""))
+        if int(document.get("pages", 0)) != total_pages:
+            failures.append(
+                f"document_page_count_changed:{document_id}:"
+                f"{document.get('pages', 0)}/{total_pages}"
+            )
+        if max_pages > 0 and len(pages) < total_pages:
+            failures.append(
+                f"document_truncated:{document_id}:{len(pages)}/{total_pages}"
+            )
+        if not pages:
+            failures.append(f"document_has_no_pages:{document_id}")
+        else:
+            text_page_count = sum(1 for page in pages if page["text_chars"] >= 80)
+            if text_page_count / len(pages) < 0.6:
+                failures.append(f"needs_ocr:{document_id}:text_coverage_below_60_percent")
         for page in pages:
             page_records.append(
                 {
@@ -613,19 +634,12 @@ def build_evidence_artifact(
     missing_types = [kind for kind in required_types if kind not in available_types]
     text_pages = sum(1 for page in page_records if page["text_chars"] >= 80)
     needs_ocr = bool(page_records) and text_pages / len(page_records) < 0.6
-    if needs_ocr:
-        failures.append("needs_ocr:text_coverage_below_60_percent")
     if not page_records:
         failures.append("no_pdf_pages_extracted")
     if missing_types:
         failures.append(f"missing_required_evidence:{','.join(missing_types)}")
 
-    if not page_records or missing_types:
-        status = "fail"
-    elif failures:
-        status = "degraded"
-    else:
-        status = "pass"
+    status = "fail" if failures else "pass"
     coverage = {
         "required": list(required_types),
         "available": sorted(available_types),
@@ -683,7 +697,7 @@ def build_evidence_artifact(
         "figure_captions": figures,
         "table_captions": tables,
         "quotes": [],
-        "evidence_quality": {"pass": "high", "degraded": "medium", "fail": "low"}[status],
+        "evidence_quality": {"pass": "high", "fail": "low"}[status],
         "extraction_failures": failures,
     }
     artifact = artifact_header(
@@ -752,15 +766,9 @@ def build_contract_evidence(
         failures.append(f"missing_required_evidence:{','.join(missing)}")
     artifact["failures"] = failures
     pack["extraction_failures"] = failures
-    if not pack.get("page_records") or missing:
-        artifact["status"] = "fail"
-    elif failures:
-        artifact["status"] = "degraded"
-    else:
-        artifact["status"] = "pass"
+    artifact["status"] = "fail" if failures else "pass"
     pack["evidence_quality"] = {
         "pass": "high",
-        "degraded": "medium",
         "fail": "low",
     }[artifact["status"]]
     return artifact
@@ -773,7 +781,7 @@ def main() -> None:
         max_chars_per_chunk=args.max_chars_per_chunk,
     )
     emit_json(artifact, args.output or None)
-    if artifact["status"] == "fail":
+    if artifact["status"] != "pass":
         raise SystemExit(2)
 
 

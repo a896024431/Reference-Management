@@ -18,13 +18,7 @@ import io
 import re
 from pathlib import Path
 
-from common import (
-    enrich_metadata,
-    fitz,
-    maybe_load_json_record,
-    normalize_whitespace,
-    resolve_reference,
-)
+from common import fitz, normalize_whitespace
 
 try:
     from PIL import Image  # type: ignore
@@ -158,13 +152,6 @@ def _classify_caption_kind(label: str) -> str:
     return "table" if label.strip().lower().startswith("table") else "figure"
 
 
-def ensure_record(input_value: str) -> dict:
-    record = maybe_load_json_record(input_value)
-    if record is not None:
-        return dict(record)
-    return enrich_metadata(resolve_reference(input_value))
-
-
 def save_image_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -180,119 +167,9 @@ def ocr_page(page, dpi: int) -> str:
     return normalize_whitespace(pytesseract.image_to_string(image))
 
 
-def extract_page_images(doc, page, page_number: int, images_dir: Path) -> list[dict]:
-    """Legacy xref-level extraction."""
-    assets: list[dict] = []
-    seen_xrefs = set()
-    for image_index, image_info in enumerate(page.get_images(full=True), start=1):
-        if not image_info:
-            continue
-        xref = int(image_info[0])
-        if xref in seen_xrefs:
-            continue
-        seen_xrefs.add(xref)
-        extracted = doc.extract_image(xref)
-        image_bytes = extracted.get("image")
-        if not image_bytes:
-            continue
-        ext = normalize_whitespace(str(extracted.get("ext", "png"))).lower() or "png"
-        filename = f"page_{page_number:03d}_img_{image_index:02d}.{ext}"
-        output_path = images_dir / filename
-        save_image_bytes(output_path, image_bytes)
-        assets.append(
-            {
-                "page_number": page_number,
-                "image_index": image_index,
-                "xref": xref,
-                "filename": filename,
-                "path": str(output_path),
-                "ext": ext,
-                "width": extracted.get("width", 0),
-                "height": extracted.get("height", 0),
-                "colorspace": extracted.get("colorspace", 0),
-                "size_bytes": len(image_bytes),
-                "extraction_level": "xref",
-            }
-        )
-    return assets
-
-
 # ---------------------------------------------------------------------------
 # Figure-level extraction: caption-anchored page-render cropping
 # ---------------------------------------------------------------------------
-
-
-def _find_caption_blocks(page) -> list[dict]:
-    """Return caption anchors sorted top-to-bottom by their y0 coordinate.
-
-    Each anchor contains the full multi-line caption bbox so that the
-    downstream crop includes the entire caption text, not just the first line.
-
-    Each anchor::
-
-        {
-            "label": "Figure 3",
-            "kind": "figure" | "table",
-            "bbox": (x0, y0, x1, y1),
-            "line_text": ...,
-        }
-    """
-    anchors: list[dict] = []
-    blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
-    for block in blocks:
-        if block.get("type") != 0:
-            continue
-        lines = block.get("lines", [])
-        for line_idx, line in enumerate(lines):
-            spans = line.get("spans", [])
-            if not spans:
-                continue
-            line_text = "".join(s.get("text", "") for s in spans).strip()
-            match = CAPTION_RE.match(line_text)
-            if not match:
-                continue
-            label = normalize_whitespace(match.group(1))
-            kind = _classify_caption_kind(label)
-
-            caption_lines_text = [line_text]
-            first_bbox = line["bbox"]
-            x0, y0, x1, y1 = first_bbox
-            prev_line_bottom = first_bbox[3]
-            line_height = max(first_bbox[3] - first_bbox[1], 6.0)
-
-            for cont_line in lines[line_idx + 1 :]:
-                cont_spans = cont_line.get("spans", [])
-                if not cont_spans:
-                    break
-                cont_text = "".join(s.get("text", "") for s in cont_spans).strip()
-                if not cont_text:
-                    break
-                if CAPTION_RE.match(cont_text):
-                    break
-                if _looks_like_data_row(cont_text):
-                    break
-                cb = cont_line["bbox"]
-                # Stop merging if the next line is too far below the previous one
-                # (it is then a separate paragraph, not a caption continuation).
-                if cb[1] - prev_line_bottom > line_height * 1.6:
-                    break
-                x0 = min(x0, cb[0])
-                y1 = max(y1, cb[3])
-                x1 = max(x1, cb[2])
-                prev_line_bottom = cb[3]
-                caption_lines_text.append(cont_text)
-
-            full_caption = " ".join(caption_lines_text)
-            anchors.append(
-                {
-                    "label": label,
-                    "kind": kind,
-                    "bbox": (x0, y0, x1, y1),
-                    "line_text": full_caption,
-                }
-            )
-    anchors.sort(key=lambda a: a["bbox"][1])
-    return anchors
 
 
 def _collect_xref_rects(page) -> list[tuple[float, float, float, float]]:
@@ -884,89 +761,3 @@ def _render_crop(page, bbox: tuple[float, float, float, float], dpi: int) -> byt
     matrix = fitz.Matrix(scale, scale)
     pix = page.get_pixmap(matrix=matrix, clip=clip, alpha=False)
     return pix.tobytes("png")
-
-
-def extract_figure_regions(
-    page, page_number: int, images_dir: Path, *, dpi: int = FIGURE_RENDER_DPI
-) -> list[dict]:
-    """Detect figure/table captions and crop the corresponding visual region."""
-    if fitz is None:
-        return []
-
-    anchors = _find_caption_blocks(page)
-    if not anchors:
-        return []
-
-    page_rect = page.rect
-    assets: list[dict] = []
-
-    for idx, anchor in enumerate(anchors):
-        prev_anchor = anchors[idx - 1] if idx > 0 else None
-        next_anchor = anchors[idx + 1] if idx + 1 < len(anchors) else None
-        kind = anchor.get("kind", "figure")
-
-        bbox: tuple[float, float, float, float] | None
-        table_body_rows = 0
-        if kind == "table":
-            table_result = _estimate_table_bbox_with_rows(
-                page, anchor, prev_anchor, next_anchor, page_rect
-            )
-            if table_result is not None:
-                bbox, table_body_rows = table_result
-            else:
-                bbox = None
-            if bbox is None:
-                # Fall back to the figure-shape estimator in case the table is
-                # actually rendered as an embedded image.
-                bbox = _estimate_figure_bbox_above_caption(page, anchor, prev_anchor, page_rect)
-        else:
-            bbox = _estimate_figure_bbox_above_caption(page, anchor, prev_anchor, page_rect)
-            if bbox is None:
-                bbox = _estimate_table_bbox(page, anchor, prev_anchor, next_anchor, page_rect)
-
-        if bbox is None:
-            continue
-
-        label = anchor["label"]
-        safe_label = re.sub(r"[^a-zA-Z0-9]+", "_", label.lower()).strip("_")
-        filename = f"page_{page_number:03d}_fig_{safe_label}.png"
-        output_path = images_dir / filename
-
-        try:
-            png_bytes = _render_crop(page, bbox, dpi)
-        except Exception:
-            continue
-
-        save_image_bytes(output_path, png_bytes)
-
-        width_px = int((bbox[2] - bbox[0]) * dpi / 72.0)
-        height_px = int((bbox[3] - bbox[1]) * dpi / 72.0)
-        quality_signals = _quality_signals_for_crop(
-            page,
-            kind,
-            bbox,
-            anchor,
-            page_rect,
-            table_body_rows=table_body_rows,
-            caption_anchors=anchors,
-        )
-
-        assets.append(
-            {
-                "page_number": page_number,
-                "label": label,
-                "kind": kind,
-                "caption_text": normalize_whitespace(anchor["line_text"]),
-                "filename": filename,
-                "path": str(output_path),
-                "ext": "png",
-                "width": width_px,
-                "height": height_px,
-                "bbox_pt": list(bbox),
-                "size_bytes": len(png_bytes),
-                "extraction_level": "figure",
-                "quality_signals": quality_signals,
-            }
-        )
-
-    return assets

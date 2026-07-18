@@ -27,7 +27,18 @@ def context_bundle() -> tuple[dict, dict, dict]:
             "title": "Quantum Hall Test Paper",
             "abstract": "We measure conductance in a graphene device.",
         },
-        "documents": [],
+        "documents": [
+            {
+                "document_id": "doc:main",
+                "role": "main",
+                "path": "",
+                "url": "https://example.test/paper.pdf",
+                "source": "test",
+                "sha256": "0" * 64,
+                "pages": 3,
+                "filename": "paper.pdf",
+            }
+        ],
     }
     evidence = artifact_header(
         "evidence_pack", paper_id=record["paper_id"], run_id=record["run_id"]
@@ -131,6 +142,7 @@ tags:
 def quality_source() -> dict:
     return {
         "reviewer": "independent-quality-reviewer",
+        "review_origin": "subagent",
         "independent": True,
         "scores": {
             "factual_fidelity": 4,
@@ -151,6 +163,7 @@ def quality_source() -> dict:
 def readability_source() -> dict:
     return {
         "reviewer": "independent-language-reviewer",
+        "review_origin": "subagent",
         "independent": True,
         "scores": {
             "factual_fidelity": 4,
@@ -169,10 +182,15 @@ def test_hash_bound_lint_quality_and_readability_gates() -> None:
     lint = build_release_lint(note, context)
     assert lint["status"] == "pass", lint["failures"]
     quality = build_review_artifact(
-        kind="quality", note_text=note, review_source=quality_source(), context=context
+        kind="quality",
+        author="note-author",
+        note_text=note,
+        review_source=quality_source(),
+        context=context
     )
     readability = build_review_artifact(
         kind="readability",
+        author="note-author",
         note_text=note,
         review_source=readability_source(),
         context=context,
@@ -182,6 +200,7 @@ def test_hash_bound_lint_quality_and_readability_gates() -> None:
     try:
         build_review_artifact(
             kind="readability",
+            author="note-author",
             note_text=note + "\n改动。",
             review_source=readability_source(),
             context=context,
@@ -201,19 +220,43 @@ def test_strict_release_accepts_explicit_final_placeholder(tmp_path: Path) -> No
         {
             "paper_type": "experimental_physics",
             "dominant_domain": "condensed-matter-physics",
-            "must_cover": ["experiment", "results"],
-            "key_numbers": ["20 mK"],
-            "real_comparisons": ["controlled settings"],
-            "section_plan": [{"section": "主要结果与证据链"}],
             "evidence_ids": ["ev:1", "ev:2", "ev:3"],
+            "must_cover": [
+                {"topic": "experiment", "evidence_ids": ["ev:1", "ev:2"]},
+                {"topic": "results", "evidence_ids": ["ev:3"]},
+            ],
+            "key_claims": [
+                {"claim": "problem", "evidence_ids": ["ev:1"]},
+                {"claim": "protocol", "evidence_ids": ["ev:2"]},
+                {"claim": "result", "evidence_ids": ["ev:3"]},
+            ],
+            "key_numbers": [{"number": "20 mK", "evidence_ids": ["ev:2"]}],
+            "real_comparisons": [
+                {
+                    "comparison": "controlled settings",
+                    "evidence_ids": ["ev:2", "ev:3"],
+                }
+            ],
+            "section_plan": [
+                {
+                    "section": "主要结果与证据链",
+                    "evidence_ids": ["ev:1", "ev:2", "ev:3"],
+                }
+            ],
+            "figure_intents": [],
         },
         context,
     )
     quality = build_review_artifact(
-        kind="quality", note_text=note, review_source=quality_source(), context=context
+        kind="quality",
+        author="note-author",
+        note_text=note,
+        review_source=quality_source(),
+        context=context
     )
     readability = build_review_artifact(
         kind="readability",
+        author="note-author",
         note_text=note,
         review_source=readability_source(),
         context=context,
@@ -250,7 +293,6 @@ def test_strict_release_accepts_explicit_final_placeholder(tmp_path: Path) -> No
             "figure_manifest": manifest,
             "figure_decisions": decisions,
         },
-        allow_degraded=False,
     )
     assert release["note_sha256"] == lint["note_sha256"]
 
@@ -303,10 +345,15 @@ def test_publish_guard_rejects_metadata_even_if_lint_artifact_claims_pass(tmp_pa
     lint = build_release_lint(note_text(), context)
     lint["note_sha256"] = sha256_text(note)
     quality = build_review_artifact(
-        kind="quality", note_text=note, review_source=quality_source(), context=context
+        kind="quality",
+        author="note-author",
+        note_text=note,
+        review_source=quality_source(),
+        context=context
     )
     readability = build_review_artifact(
         kind="readability",
+        author="note-author",
         note_text=note,
         review_source=readability_source(),
         context=context,
@@ -316,11 +363,30 @@ def test_publish_guard_rejects_metadata_even_if_lint_artifact_claims_pass(tmp_pa
         {
             "paper_type": "experimental_physics",
             "dominant_domain": "condensed-matter-physics",
-            "must_cover": ["experiment", "results"],
-            "key_numbers": ["20 mK"],
-            "real_comparisons": ["controlled settings"],
-            "section_plan": [{"section": "主要结果与证据链"}],
             "evidence_ids": ["ev:1", "ev:2", "ev:3"],
+            "must_cover": [
+                {"topic": "experiment", "evidence_ids": ["ev:1", "ev:2"]},
+                {"topic": "results", "evidence_ids": ["ev:3"]},
+            ],
+            "key_claims": [
+                {"claim": "problem", "evidence_ids": ["ev:1"]},
+                {"claim": "protocol", "evidence_ids": ["ev:2"]},
+                {"claim": "result", "evidence_ids": ["ev:3"]},
+            ],
+            "key_numbers": [{"number": "20 mK", "evidence_ids": ["ev:2"]}],
+            "real_comparisons": [
+                {
+                    "comparison": "controlled settings",
+                    "evidence_ids": ["ev:2", "ev:3"],
+                }
+            ],
+            "section_plan": [
+                {
+                    "section": "主要结果与证据链",
+                    "evidence_ids": ["ev:1", "ev:2", "ev:3"],
+                }
+            ],
+            "figure_intents": [],
         },
         context,
     )
@@ -357,5 +423,4 @@ def test_publish_guard_rejects_metadata_even_if_lint_artifact_claims_pass(tmp_pa
                 "figure_manifest": manifest,
                 "figure_decisions": decisions,
             },
-            allow_degraded=False,
         )

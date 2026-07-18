@@ -7,9 +7,10 @@
 1. 用户给出论文标题、DOI、arXiv ID、URL 或本地 PDF，并要求生成论文笔记时，使用 DeepPaperNote 工作流。
 2. 开始处理前，必须读取 `.agents/skills/DeepPaperNote/SKILL.md`，并按其中要求读取相关说明文件。
 3. 每篇论文保存到 `Research/<论文标题>/`，目录内至少包含 `笔记.md` 和 `images/`；即使没有可靠图片，也要创建 `images/`。
-4. PDF 或全文证据不足时，明确标记为证据不足或降级草稿，不得声称已经完成完整深读。
-5. 写入 Obsidian 前，按 DeepPaperNote 要求完成内容校验和最终可读性检查。
-6. 笔记完成、通过校验并保存后，必须询问用户是否需要同步到 GitHub。用户确认前不得执行 `git add`、`git commit` 或 `git push`。
+4. 任一 PDF 解析失败、全文截断、OCR 覆盖不足或关键证据缺失时停止并报告阻塞；不得生成摘要型或降级发布笔记。
+5. 写入 Obsidian 前，必须验证 note plan 的 evidence ID 绑定，完成 lint，并由不同于作者的另一代理或人工完成质量与可读性复核。
+6. 发布器只接受完整证据和 `note_status: polished`，并核对推导出的证据与插图状态。
+7. 笔记完成、通过校验并保存后，必须询问用户是否需要同步到 GitHub。用户确认前不得执行 `git add`、`git commit` 或 `git push`。
 
 ## 内容与维护边界
 

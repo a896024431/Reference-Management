@@ -33,12 +33,13 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument(
         "--vault-root", default="", help="Used only to derive safe vault-relative document paths."
     )
+    command.add_argument("--supplement", action="append", default=[])
     return command
 
 
 def _pages(path: Path) -> int:
     if fitz is None:
-        return 0
+        raise ContractError("PyMuPDF/fitz is required to inspect PDF page counts")
     document = fitz.open(path)
     try:
         return len(document)
@@ -81,11 +82,14 @@ def create_explicit_record(
     run_id: str,
     paper_id: str = "",
     vault_root: str = "",
+    supplements: list[str] | None = None,
 ) -> dict[str, Any]:
     title = str(source.get("title", "")).strip()
     if not title:
         raise ContractError("Explicit input record requires title")
     root = Path(vault_root).expanduser().resolve() if vault_root else None
+    if root is not None and (not root.exists() or not root.is_dir()):
+        raise ContractError(f"Vault root is not a directory: {root}")
     metadata_excluded = {
         "main_pdf",
         "local_pdf_path",
@@ -114,10 +118,13 @@ def create_explicit_record(
         main_pdf = str(source.get("main_pdf") or source.get("local_pdf_path") or "").strip()
         if main_pdf:
             entries.append(("main", main_pdf))
-        supplements = source.get("supplement_pdfs", []) or []
-        if not isinstance(supplements, list):
+        configured_supplements = source.get("supplement_pdfs", []) or []
+        if not isinstance(configured_supplements, list):
             raise ContractError("supplement_pdfs must be a list")
-        entries.extend(("supplement", str(path)) for path in supplements if str(path).strip())
+        entries.extend(
+            ("supplement", str(path)) for path in configured_supplements if str(path).strip()
+        )
+    entries.extend(("supplement", str(path)) for path in (supplements or []) if str(path).strip())
     if sum(1 for role, _ in entries if role == "main") != 1:
         raise ContractError("Explicit input record requires exactly one main document")
     if any(role not in {"main", "supplement"} for role, _ in entries):
@@ -141,6 +148,7 @@ def main() -> None:
         run_id=args.run_id or utc_run_id(),
         paper_id=args.paper_id,
         vault_root=args.vault_root,
+        supplements=args.supplement,
     )
     emit_json(artifact, args.output or None)
 

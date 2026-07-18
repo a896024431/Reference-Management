@@ -140,6 +140,50 @@ def _section(body: str, title: str) -> str:
     return match.group(1) if match else ""
 
 
+SOURCE_ANCHOR_RE = re.compile(r"(?:主文|补充材料)\s+p\.\s*\d+")
+LATEX_COMMAND_RE = re.compile(
+    r"(?<!\\)\\(?:alpha|beta|gamma|delta|epsilon|theta|lambda|mu|nu|xi|pi|rho|"
+    r"sigma|tau|phi|chi|psi|omega|frac|sqrt|sum|prod|int|mathcal|mathrm|mathbf|"
+    r"text|begin|end|left|right|cdot|times|pm|le|ge|approx)\b"
+)
+
+
+def _mask_match(match: re.Match[str]) -> str:
+    return re.sub(r"[^\n]", " ", match.group(0))
+
+
+def latex_commands_outside_math(text: str) -> list[dict[str, object]]:
+    visible = parse_frontmatter(text).body
+    for pattern, flags in (
+        (r"```.*?```", re.DOTALL),
+        (r"`[^`\n]*`", 0),
+        (r"\\\[.*?\\\]", re.DOTALL),
+        (r"\\\(.*?\\\)", re.DOTALL),
+        (r"\$\$.*?\$\$", re.DOTALL),
+        (r"(?<!\\)\$(?:\\.|[^$\n])*?(?<!\\)\$", 0),
+    ):
+        visible = re.sub(pattern, _mask_match, visible, flags=flags)
+    issues: list[dict[str, object]] = []
+    for match in LATEX_COMMAND_RE.finditer(visible):
+        issues.append(
+            {
+                "line": visible.count("\n", 0, match.start()) + 1,
+                "command": match.group(0),
+            }
+        )
+    return issues
+
+
+def _claim_items(section: str) -> list[str]:
+    return [
+        match.group(1).strip()
+        for match in re.finditer(
+            r"(?ms)^\s*[-*]\s+(.+?)(?=^\s*[-*]\s+|\Z)",
+            section,
+        )
+    ]
+
+
 def _reader_visible_body(text: str) -> str:
     """Remove machine-only markup before checking reader-visible figure prose."""
     body = parse_frontmatter(text).body
@@ -183,9 +227,37 @@ def build_release_lint(
     frontmatter_issues = validate_frontmatter_properties(parsed.properties)
     failures.extend(f"frontmatter:{item['code']}:{item['property']}" for item in frontmatter_issues)
     body = parsed.body
-    if not body.lstrip().startswith("# "):
+    h1_headings = re.findall(r"(?m)^#\s+(.+?)\s*$", body)
+    if not h1_headings:
         failures.append("title_heading_missing")
+    elif len(h1_headings) > 1:
+        failures.append("multiple_h1_headings")
+    english_title_lines = re.findall(
+        r"(?m)^\*([A-Za-z][^*\n]{15,})\*\s*$",
+        body,
+    )
+    normalized_english_titles = [
+        re.sub(r"\W+", " ", item).strip().casefold() for item in english_title_lines
+    ]
+    if len(normalized_english_titles) != len(set(normalized_english_titles)):
+        failures.append("duplicate_english_title")
     headings = re.findall(r"(?m)^##\s+(.+?)\s*$", body)
+    heading_targets = {
+        match.group(1).strip() for match in re.finditer(r"(?m)^#{1,6}\s+(.+?)\s*$", body)
+    }
+    broken_internal_heading_links: list[dict[str, object]] = []
+    for match in re.finditer(r"(?<!!)\[\[#([^|\]]+)(?:\|[^\]]*)?\]\]", body):
+        target = match.group(1).strip()
+        if target not in heading_targets:
+            broken_internal_heading_links.append(
+                {
+                    "line": body.count("\n", 0, match.start()) + 1,
+                    "target": target,
+                }
+            )
+    failures.extend(
+        f"internal_heading_link_missing:{item['target']}" for item in broken_internal_heading_links
+    )
     for title in REQUIRED_HEADINGS:
         accepted = REQUIRED_HEADING_ALIASES.get(title, (title,))
         if not any(candidate in headings for candidate in accepted):
@@ -194,10 +266,17 @@ def build_release_lint(
         failures.append("domain_method_section_missing")
 
     claims = _section(body, "关键结论")
-    claim_count = len(re.findall(r"(?m)^\s*[-*]\s+\S", claims))
+    claim_items = _claim_items(claims)
+    claim_count = len(claim_items)
     if claim_count < 3:
         failures.append("fewer_than_three_key_claims")
-    anchors = re.findall(r"(?:主文|补充材料)\s+p\.\s*\d+", body)
+    unanchored_claims = [
+        index
+        for index, claim in enumerate(claim_items, start=1)
+        if not SOURCE_ANCHOR_RE.search(claim)
+    ]
+    failures.extend(f"key_claim_missing_source_anchor:{index}" for index in unanchored_claims)
+    anchors = SOURCE_ANCHOR_RE.findall(body)
     if len(anchors) < 3:
         failures.append("fewer_than_three_source_anchors")
 
@@ -222,6 +301,7 @@ def build_release_lint(
     linebreaks = suspicious_mid_sentence_linebreaks(body)
     code_math = suspicious_code_formatted_math(text)
     math_issues = math_render_issues(text)
+    raw_latex_issues = latex_commands_outside_math(text)
     if mixed:
         failures.append("mixed_language_lines_present")
     if linebreaks:
@@ -230,6 +310,8 @@ def build_release_lint(
         failures.append("code_formatted_math_present")
     if math_issues:
         failures.append("math_render_issues_present")
+    if raw_latex_issues:
+        failures.append("latex_command_outside_math")
     failures = list(dict.fromkeys(failures))
 
     artifact = artifact_header(
@@ -243,7 +325,10 @@ def build_release_lint(
         {
             "input_path": input_path,
             "note_sha256": sha256_text(text),
+            "h1_headings": h1_headings,
             "headings": headings,
+            "english_title_lines": english_title_lines,
+            "broken_internal_heading_links": broken_internal_heading_links,
             "key_claim_count": claim_count,
             "source_anchor_count": len(anchors),
             "frontmatter_issues": frontmatter_issues,
@@ -251,10 +336,19 @@ def build_release_lint(
             "linebreak_issues": linebreaks,
             "code_math_issues": code_math,
             "math_render_issues": math_issues,
+            "latex_commands_outside_math": raw_latex_issues,
+            "unanchored_key_claims": unanchored_claims,
             "reader_visible_figure_metadata_issues": figure_metadata_issues,
             "passes_basic_structure": not any(
                 item.startswith(
-                    ("frontmatter", "required_section", "title_heading", "domain_method")
+                    (
+                        "frontmatter",
+                        "required_section",
+                        "title_heading",
+                        "multiple_h1",
+                        "domain_method",
+                        "internal_heading_link",
+                    )
                 )
                 for item in failures
             ),
@@ -266,10 +360,15 @@ def build_release_lint(
                     "code_formatted_math_present",
                 )
             ),
-            "passes_math_gate": "math_render_issues_present" not in failures,
-            "passes_traceability_gate": not any(
+            "passes_math_gate": not any(
                 item in failures
-                for item in ("fewer_than_three_key_claims", "fewer_than_three_source_anchors")
+                for item in ("math_render_issues_present", "latex_command_outside_math")
+            ),
+            "passes_traceability_gate": not any(
+                item == "fewer_than_three_key_claims"
+                or item == "fewer_than_three_source_anchors"
+                or item.startswith("key_claim_missing_source_anchor:")
+                for item in failures
             ),
             "passes_publication_hygiene_gate": not any(
                 item in failures
@@ -277,6 +376,7 @@ def build_release_lint(
                     "absolute_local_path_present",
                     "runtime_status_persisted",
                     "temporary_path_present",
+                    "duplicate_english_title",
                     "published_html_comment_present",
                     "figure_placeholder_callout_present",
                     "figure_planning_label_present",

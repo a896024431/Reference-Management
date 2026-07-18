@@ -17,6 +17,7 @@ from contracts_v2 import (
     artifact_header,
     emit_json,
     load_json_object,
+    note_plan_bound_evidence_ids,
     require_note_hash,
     require_same_identity,
     require_v2_artifact,
@@ -57,7 +58,6 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--figure-visual-review", required=True)
     command.add_argument("--backup-root", default="")
     command.add_argument("--output", default="")
-    command.add_argument("--allow-degraded", action="store_true")
     command.add_argument("--dry-run", action="store_true")
     return command
 
@@ -126,11 +126,85 @@ def _referenced_image_names(note_text: str) -> set[str]:
     return names
 
 
+def expected_evidence_level(paper_record: dict[str, Any]) -> str:
+    documents = paper_record["paper_record"].get("documents", [])
+    if not any(document.get("role") == "main" for document in documents):
+        raise ContractError("Formal publishing requires one parsed main document")
+    return (
+        "full_text_supplement"
+        if any(document.get("role") == "supplement" for document in documents)
+        else "full_text"
+    )
+
+
+def expected_figure_status(decisions: dict[str, Any]) -> str:
+    entries = [
+        item for item in decisions.get("decisions", []) if isinstance(item, dict)
+    ]
+    if not entries:
+        return "none_needed"
+    outcomes = {str(item.get("decision", "")) for item in entries}
+    has_placeholder = "placeholder" in outcomes
+    has_inserted = "inserted" in outcomes
+    if has_placeholder and has_inserted:
+        return "partial"
+    if has_placeholder:
+        return "placeholder_only"
+    return "complete"
+
+
+def validate_staging_contents(staging_dir: Path) -> None:
+    root_entries = {item.name for item in staging_dir.iterdir()}
+    expected = {NOTE_FILENAME, "images"}
+    if root_entries != expected:
+        extras = sorted(root_entries - expected)
+        missing = sorted(expected - root_entries)
+        details = []
+        if extras:
+            details.append("extra=" + ",".join(extras))
+        if missing:
+            details.append("missing=" + ",".join(missing))
+        raise ContractError(
+            "Staging contents do not match the release contract: " + "; ".join(details)
+        )
+    image_dir = staging_dir / "images"
+    if not image_dir.is_dir():
+        raise ContractError("Staging directory is missing images/")
+    invalid = [
+        item.name
+        for item in image_dir.iterdir()
+        if not item.is_file() or item.suffix.lower() not in IMAGE_EXTENSIONS
+    ]
+    if invalid:
+        raise ContractError(
+            "Staging images/ contains non-image assets: " + ", ".join(sorted(invalid))
+        )
+
+
+def validate_note_plan_evidence(
+    note_plan: dict[str, Any],
+    evidence: dict[str, Any],
+) -> None:
+    pack = evidence.get("evidence_pack")
+    if not isinstance(pack, dict):
+        raise ContractError("evidence_pack payload is missing")
+    known = {
+        str(item.get("evidence_id", ""))
+        for item in pack.get("evidence_units", [])
+        if isinstance(item, dict) and item.get("evidence_id")
+    }
+    cited = note_plan_bound_evidence_ids(note_plan["note_plan"])
+    unknown = sorted(cited - known)
+    if unknown:
+        raise ContractError(
+            "note_plan references evidence absent from evidence_pack: " + ", ".join(unknown)
+        )
+
+
 def validate_release(
     *,
     staging_dir: Path,
     artifacts: dict[str, dict[str, Any]],
-    allow_degraded: bool,
 ) -> dict[str, Any]:
     paper_record = artifacts["paper_record"]
     evidence = artifacts["evidence_pack"]
@@ -140,14 +214,22 @@ def validate_release(
     readability = artifacts["readability_review"]
     validate_paper_record_artifact(paper_record)
     require_v2_artifact(
+        paper_record,
+        artifact_type="paper_record",
+        allow_statuses={"pass"},
+    )
+    require_v2_artifact(
         evidence,
         artifact_type="evidence_pack",
-        allow_statuses={"pass", "degraded"} if allow_degraded else {"pass"},
+        allow_statuses={"pass"},
     )
     validate_note_plan_artifact(note_plan)
+    validate_note_plan_evidence(note_plan, evidence)
     require_v2_artifact(lint, artifact_type="lint_report", allow_statuses={"pass"})
     validate_review_artifact(quality, kind="quality")
     validate_review_artifact(readability, kind="readability")
+    if str(quality["author"]).casefold() != str(readability["author"]).casefold():
+        raise ContractError("Quality and readability reviews must name the same note author")
 
     manifest = normalize_figure_manifest(artifacts["figure_manifest"], verify_files=True)
     decisions = normalize_figure_decisions(
@@ -168,12 +250,9 @@ def validate_release(
         decisions,
     )
 
+    validate_staging_contents(staging_dir)
     note_path = staging_dir / NOTE_FILENAME
     image_dir = staging_dir / "images"
-    if not note_path.is_file():
-        raise ContractError(f"Staging directory is missing {NOTE_FILENAME}")
-    if not image_dir.is_dir():
-        raise ContractError("Staging directory is missing images/")
     note_text = note_path.read_text(encoding="utf-8")
     figure_metadata_issues = reader_visible_figure_metadata_issues(note_text)
     if figure_metadata_issues:
@@ -187,22 +266,31 @@ def validate_release(
     if parsed.errors or frontmatter_issues:
         codes = [*parsed.errors, *(item["code"] for item in frontmatter_issues)]
         raise ContractError("Frontmatter release gate failed: " + ", ".join(codes))
-    if evidence["status"] == "degraded" and parsed.properties.get("note_status") != "degraded":
-        raise ContractError("Degraded evidence may only publish a note_status: degraded note")
+    if parsed.properties.get("note_status") != "polished":
+        raise ContractError("Formal publishing requires note_status: polished")
+    evidence_level = expected_evidence_level(paper_record)
+    if parsed.properties.get("evidence_level") != evidence_level:
+        raise ContractError(
+            f"Frontmatter evidence_level must be {evidence_level!r} for these documents"
+        )
+    figure_status = expected_figure_status(decisions)
+    if parsed.properties.get("figure_status") != figure_status:
+        raise ContractError(
+            f"Frontmatter figure_status must be {figure_status!r} for these decisions"
+        )
 
     materialized = materialize_inserted_assets(
         manifest=manifest,
         decisions=decisions,
         destination_dir=image_dir,
     )
+    validate_staging_contents(staging_dir)
     alignment = figure_note_alignment_issues(note_text, decisions, materialized=materialized)
     if alignment:
         raise ContractError("Figure/note alignment failed: " + "; ".join(alignment))
     referenced = _referenced_image_names(note_text)
     image_failures: list[str] = []
     for image in sorted(image_dir.iterdir()):
-        if not image.is_file() or image.suffix.lower() not in IMAGE_EXTENSIONS:
-            continue
         corruption = validate_image_file(image)
         if corruption:
             image_failures.append(f"image_corrupt:{image.name}:{corruption}")
@@ -224,6 +312,8 @@ def validate_release(
         "manifest": manifest,
         "decisions": decisions,
         "materialized": materialized,
+        "evidence_level": evidence_level,
+        "figure_status": figure_status,
     }
 
 
@@ -339,9 +429,17 @@ def archive_publish_audit(
             }
         )
         emit_json(snapshot, temporary / "snapshot.json")
+        previous = audit_root / f".{release['run_id']}.audit-old-{uuid.uuid4().hex}"
         if audit_target.exists():
-            _safe_remove_tree(audit_target, allowed_root=audit_root)
-        os.replace(temporary, audit_target)
+            os.replace(audit_target, previous)
+        try:
+            os.replace(temporary, audit_target)
+        except Exception:
+            if previous.exists() and not audit_target.exists():
+                os.replace(previous, audit_target)
+            raise
+        if previous.exists():
+            _safe_remove_tree(previous, allowed_root=audit_root)
     except Exception:
         if temporary.exists():
             _safe_remove_tree(temporary, allowed_root=audit_root)
@@ -378,7 +476,6 @@ def main() -> None:
     release = validate_release(
         staging_dir=staging_dir,
         artifacts=artifacts,
-        allow_degraded=args.allow_degraded,
     )
     backup_root = (
         Path(args.backup_root).expanduser().resolve()
@@ -407,6 +504,8 @@ def main() -> None:
             "audit": str(predicted_audit),
             "backup": "",
             "materialized_figures": release["materialized"],
+            "evidence_level": release["evidence_level"],
+            "figure_status": release["figure_status"],
         }
     )
 

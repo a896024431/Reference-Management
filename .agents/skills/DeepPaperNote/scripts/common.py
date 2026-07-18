@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -37,14 +36,6 @@ except ImportError:  # pragma: no cover
     fitz = None
 
 
-def base_parser(description: str) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--input", help="Primary input path, JSON artifact, or identifier.")
-    parser.add_argument("--output", help="Output path for JSON or Markdown.")
-    parser.add_argument("--paper-id", help="Canonical paper id if already known.")
-    return parser
-
-
 def ensure_parent(path: str | Path) -> None:
     Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
@@ -56,16 +47,6 @@ def emit(payload: dict[str, Any], output_path: str | None = None) -> None:
         Path(output_path).write_text(text + "\n", encoding="utf-8")
     else:
         print(text)
-
-
-def stub_payload(script: str, description: str, outputs: list[str]) -> dict[str, Any]:
-    return {
-        "status": "scaffold",
-        "script": script,
-        "description": description,
-        "next_step": "Implement this contract incrementally.",
-        "outputs": outputs,
-    }
 
 
 def load_json_file(path: str | Path) -> dict[str, Any]:
@@ -160,14 +141,6 @@ def slugify_filename(text: str) -> str:
     text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE)
     text = re.sub(r"[-\s]+", "_", text).strip("_")
     return text or "paper_note"
-
-
-def paper_folder_name(title: str) -> str:
-    """Return the paper-title folder name, preserving spaces when possible."""
-    name = normalize_whitespace(title)
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name)
-    name = name.rstrip(" .")
-    return name or "paper_note"
 
 
 def shell_config_value(name: str) -> str:
@@ -698,7 +671,101 @@ def merge_metadata_records(*records: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def choose_best_title_match(title: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+TITLE_MATCH_MIN_SIMILARITY = 0.80
+
+
+def candidate_identity_keys(record: dict[str, Any]) -> set[str]:
+    """Return stable identifiers that can join the same work across providers."""
+    keys: set[str] = set()
+    doi = extract_doi(str(record.get("doi", "")))
+    if doi:
+        keys.add(f"doi:{doi.casefold()}")
+    arxiv_id = extract_arxiv_id(str(record.get("arxiv_id", "")))
+    if arxiv_id:
+        keys.add(f"arxiv:{arxiv_id.casefold()}")
+    title = normalize_title(str(record.get("title", "")))
+    year = normalize_whitespace(str(record.get("year") or record.get("published") or ""))[:4]
+    if title and re.fullmatch(r"(?:19|20)\d{2}", year):
+        keys.add(f"title-year:{title}:{year}")
+    return keys
+
+
+def deduplicate_title_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge provider records that share a DOI, arXiv id, or normalized title/year."""
+    groups: list[tuple[set[str], list[dict[str, Any]]]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        keys = candidate_identity_keys(candidate)
+        matching = [index for index, (known, _) in enumerate(groups) if keys and known & keys]
+        if not matching:
+            groups.append((set(keys), [candidate]))
+            continue
+        first = matching[0]
+        groups[first][0].update(keys)
+        groups[first][1].append(candidate)
+        for index in reversed(matching[1:]):
+            groups[first][0].update(groups[index][0])
+            groups[first][1].extend(groups[index][1])
+            groups.pop(index)
+
+    merged: list[dict[str, Any]] = []
+    for _, records in groups:
+        ranked = sorted(
+            records,
+            key=lambda item: (
+                candidate_priority_score(item),
+                publication_quality_score(item),
+                1 if item.get("doi") else 0,
+                1 if item.get("arxiv_id") else 0,
+                1 if item.get("abstract") else 0,
+            ),
+            reverse=True,
+        )
+        merged.append(merge_metadata_records(*ranked))
+    return merged
+
+
+def title_resolution(title: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Resolve a title only when all credible provider hits describe one work."""
+    credible = [
+        item
+        for item in candidates
+        if title_similarity(title, str(item.get("title", ""))) >= TITLE_MATCH_MIN_SIMILARITY
+    ]
+    distinct = deduplicate_title_candidates(credible)
+    if len(distinct) == 1:
+        return {"status": "ok", "record": distinct[0], "candidates": []}
+
+    summaries = []
+    for item in sorted(
+        distinct,
+        key=lambda record: title_similarity(title, str(record.get("title", ""))),
+        reverse=True,
+    )[:5]:
+        summaries.append(
+            {
+                "title": str(item.get("title", "")).strip(),
+                "year": str(item.get("year") or item.get("published") or "").strip(),
+                "doi": str(item.get("doi", "")).strip(),
+                "arxiv_id": str(item.get("arxiv_id", "")).strip(),
+                "source_url": str(item.get("source_url", "")).strip(),
+                "similarity": round(title_similarity(title, str(item.get("title", ""))), 3),
+            }
+        )
+    return {
+        "status": "ambiguous" if len(distinct) > 1 else "unresolved",
+        "record": None,
+        "candidates": summaries,
+    }
+
+
+def choose_best_title_match(
+    title: str,
+    candidates: list[dict[str, Any]],
+    *,
+    minimum_similarity: float = TITLE_MATCH_MIN_SIMILARITY,
+) -> dict[str, Any] | None:
     if not candidates:
         return None
     ranked = sorted(
@@ -714,7 +781,7 @@ def choose_best_title_match(title: str, candidates: list[dict[str, Any]]) -> dic
         reverse=True,
     )
     best = ranked[0]
-    if title_similarity(title, str(best.get("title", ""))) < 0.55:
+    if title_similarity(title, str(best.get("title", ""))) < minimum_similarity:
         return None
     return best
 
@@ -807,8 +874,9 @@ def resolve_reference(value: str) -> dict[str, Any]:
         + search_openalex_by_title(title, limit=5)
         + safe_fetch_arxiv_entries(search_query=f'ti:"{title}"', max_results=5)
     )
-    best = choose_best_title_match(title, candidates)
-    if best:
+    resolution = title_resolution(title, candidates)
+    best = resolution["record"]
+    if isinstance(best, dict):
         best = merge_metadata_records(
             {
                 "title": title,
@@ -821,11 +889,12 @@ def resolve_reference(value: str) -> dict[str, Any]:
         best["status"] = "ok"
         return best
     paper = {
-        "status": "ok",
+        "status": resolution["status"],
         "source_type": "title_query",
         "title": title,
         "source_url": "",
         "metadata_sources": ["title_query"],
+        "resolution_candidates": resolution["candidates"],
     }
     paper["paper_id"] = paper_id_for_record(paper)
     return paper
@@ -855,17 +924,34 @@ def enrich_metadata(record: dict[str, Any]) -> dict[str, Any]:
             candidates.append(arxiv[0])
 
     if title:
-        sem = choose_best_title_match(title, search_semantic_scholar(title, limit=5))
+        minimum_similarity = (
+            0.55 if base.get("source_type") == "local_pdf" else TITLE_MATCH_MIN_SIMILARITY
+        )
+        sem = choose_best_title_match(
+            title,
+            search_semantic_scholar(title, limit=5),
+            minimum_similarity=minimum_similarity,
+        )
         if sem:
             candidates.append(sem)
-        oa = choose_best_title_match(title, search_openalex_by_title(title, limit=5))
+        oa = choose_best_title_match(
+            title,
+            search_openalex_by_title(title, limit=5),
+            minimum_similarity=minimum_similarity,
+        )
         if oa:
             candidates.append(oa)
-        cross = choose_best_title_match(title, search_crossref_by_title(title, limit=5))
+        cross = choose_best_title_match(
+            title,
+            search_crossref_by_title(title, limit=5),
+            minimum_similarity=minimum_similarity,
+        )
         if cross:
             candidates.append(cross)
         arxiv = choose_best_title_match(
-            title, safe_fetch_arxiv_entries(search_query=f'ti:"{title}"', max_results=5)
+            title,
+            safe_fetch_arxiv_entries(search_query=f'ti:"{title}"', max_results=5),
+            minimum_similarity=minimum_similarity,
         )
         if arxiv:
             candidates.append(arxiv)
@@ -891,255 +977,6 @@ def enrich_metadata(record: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def runtime_config() -> dict[str, Any]:
-    return {
-        "obsidian_vault": env_config_value(
-            "DEEPPAPERNOTE_OBSIDIAN_VAULT",
-            "READ_ARXIV_OBSIDIAN_VAULT",
-        ),
-        "papers_dir": env_config_value("DEEPPAPERNOTE_PAPERS_DIR", default="Research"),
-        "output_dir": env_config_value("DEEPPAPERNOTE_OUTPUT_DIR", default="tmp/DeepPaperNote"),
-        "workspace_output_dir": env_config_value(
-            "DEEPPAPERNOTE_WORKSPACE_OUTPUT_DIR",
-            default="DeepPaperNote_output",
-        ),
-    }
-
-
-def configured_obsidian_vault(config: dict[str, Any]) -> Path | None:
-    vault = str(config.get("obsidian_vault", "")).strip()
-    if not vault:
-        return None
-    vault_path = Path(vault).expanduser().resolve()
-    if not vault_path.exists() or not vault_path.is_dir():
-        raise RuntimeError(f"Configured Obsidian vault does not exist: {vault_path}")
-    return vault_path
-
-
-def require_obsidian_vault(config: dict[str, Any]) -> Path:
-    vault_path = configured_obsidian_vault(config)
-    if vault_path is None:
-        raise RuntimeError(
-            "Missing Obsidian vault configuration. Set DEEPPAPERNOTE_OBSIDIAN_VAULT."
-        )
-    return vault_path
-
-
-def resolve_note_output_mode(config: dict[str, Any]) -> tuple[str, Path]:
-    vault_path = configured_obsidian_vault(config)
-    if vault_path is not None:
-        return ("obsidian", vault_path)
-    workspace_root = Path.cwd().resolve()
-    output_dir = (
-        str(config.get("workspace_output_dir", "DeepPaperNote_output")).strip()
-        or "DeepPaperNote_output"
-    )
-    return ("workspace", workspace_root / output_dir)
-
-
-DOMAIN_RULES: list[tuple[str, tuple[str, ...]]] = [
-    (
-        "心理健康",
-        (
-            "mental health",
-            "depression",
-            "anxiety",
-            "psychiatric",
-            "psychology",
-            "clinical",
-            "patient",
-            "counsel",
-            "therapy",
-        ),
-    ),
-    (
-        "大模型",
-        (
-            "large language model",
-            "llm",
-            "foundation model",
-            "gpt",
-            "transformer",
-            "instruction tuning",
-            "pretrain",
-            "pre-training",
-            "language model",
-            "agent",
-            "reasoning",
-        ),
-    ),
-    (
-        "多模态",
-        (
-            "multimodal",
-            "vision-language",
-            "audio-visual",
-            "video-language",
-            "image-text",
-            "cross-modal",
-        ),
-    ),
-    (
-        "计算机视觉",
-        (
-            "computer vision",
-            "image classification",
-            "object detection",
-            "segmentation",
-            "vision transformer",
-            "visual recognition",
-        ),
-    ),
-    (
-        "强化学习",
-        (
-            "reinforcement learning",
-            "policy optimization",
-            "bandit",
-            "markov decision process",
-            "rl",
-        ),
-    ),
-    (
-        "语音",
-        (
-            "speech",
-            "asr",
-            "automatic speech recognition",
-            "text-to-speech",
-            "speaker recognition",
-            "audio",
-        ),
-    ),
-    ("推荐系统", ("recommendation", "recommender", "ctr prediction", "ranking system")),
-    ("机器人", ("robot", "robotics", "manipulation", "navigation", "control policy")),
-    ("图学习", ("graph neural network", "graph learning", "molecular graph", "gnn")),
-    (
-        "机器学习",
-        ("machine learning", "deep learning", "neural network", "representation learning"),
-    ),
-]
-
-
-def infer_domain_label(title: str, abstract: str = "") -> str:
-    lower = normalize_whitespace(f"{title} {abstract}").lower()
-    scored: list[tuple[int, str]] = []
-    for label, keywords in DOMAIN_RULES:
-        score = sum(1 for keyword in keywords if keyword in lower)
-        if score > 0:
-            scored.append((score, label))
-    if scored:
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        return scored[0][1]
-    paper_type, _ = infer_paper_type(title, abstract)
-    if paper_type == "clinical_or_psychology_empirical":
-        return "心理健康"
-    if paper_type == "AI_method":
-        return "机器学习"
-    return "未分类"
-
-
-def is_probable_paper_folder(path: Path) -> bool:
-    if not path.is_dir():
-        return False
-    marker = path / "笔记.md"
-    return marker.exists()
-
-
-def existing_domain_dirs(config: dict[str, Any]) -> list[str]:
-    output_mode, root_path = resolve_note_output_mode(config)
-    papers_dir = str(config.get("papers_dir", "Research")).strip() or "Research"
-    base_dir = root_path / Path(papers_dir) if output_mode == "obsidian" else root_path
-    if not base_dir.exists() or not base_dir.is_dir():
-        return []
-    names: list[str] = []
-    for child in sorted(base_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        if is_probable_paper_folder(child):
-            continue
-        names.append(child.name)
-    return names
-
-
-def domain_name_score(domain_name: str, label: str, title: str, abstract: str) -> int:
-    name = domain_name.strip().lower()
-    score = 0
-    if name == label.lower():
-        score += 100
-    lower = normalize_whitespace(f"{title} {abstract}").lower()
-    for rule_label, keywords in DOMAIN_RULES:
-        if rule_label.lower() != name:
-            continue
-        score += sum(10 for keyword in keywords if keyword in lower)
-    if name in lower:
-        score += 15
-    aliases = {
-        "大模型": (
-            "llm",
-            "large language model",
-            "language model",
-            "transformer",
-            "agent",
-            "multimodal",
-        ),
-        "心理健康": ("depression", "anxiety", "mental health", "clinical", "patient", "therapy"),
-    }
-    for canonical, terms in aliases.items():
-        if canonical.lower() == name:
-            score += sum(4 for term in terms if term in lower)
-    return score
-
-
-def resolve_domain_subdir(
-    config: dict[str, Any], *, title: str, abstract: str = "", subdir: str = ""
-) -> str:
-    if subdir.strip():
-        return subdir.strip()
-    return paper_folder_name(title)
-
-
-def resolve_obsidian_note_path(
-    config: dict[str, Any],
-    *,
-    title: str,
-    subdir: str = "",
-    filename: str = "",
-) -> Path:
-    output_mode, root_path = resolve_note_output_mode(config)
-    papers_dir = str(config.get("papers_dir", "Research")).strip() or "Research"
-    relative_dir = Path(papers_dir) if output_mode == "obsidian" else Path()
-    if subdir:
-        subdir_path = Path(subdir)
-        if output_mode == "obsidian" and str(subdir_path).startswith(papers_dir):
-            relative_dir = subdir_path
-        else:
-            relative_dir = relative_dir / subdir_path
-    note_slug = paper_folder_name(title)
-    target_name = filename or "笔记.md"
-    if subdir:
-        return root_path / relative_dir / target_name
-    folder_name = note_slug
-    return root_path / relative_dir / folder_name / target_name
-
-
-def default_pdf_path(record: dict[str, Any], dest_dir: str | None = None) -> Path:
-    config = runtime_config()
-    base_dir = Path(dest_dir or config["output_dir"]).expanduser().resolve() / "pdfs"
-    base_dir.mkdir(parents=True, exist_ok=True)
-    title = str(record.get("title") or record.get("paper_id") or "paper")
-    return base_dir / f"{slugify_filename(title)}.pdf"
-
-
-def default_assets_dir(record: dict[str, Any], dest_dir: str | None = None) -> Path:
-    config = runtime_config()
-    base_dir = Path(dest_dir or config["output_dir"]).expanduser().resolve() / "assets"
-    title = str(record.get("title") or record.get("paper_id") or "paper")
-    asset_dir = base_dir / slugify_filename(title)
-    asset_dir.mkdir(parents=True, exist_ok=True)
-    return asset_dir
-
-
 def split_sentences(text: str) -> list[str]:
     text = re.sub(r"\s+", " ", text or "").strip()
     if not text:
@@ -1159,118 +996,6 @@ def clean_pdf_line(line: str) -> str:
     if len(line) <= 2:
         return ""
     return line
-
-
-def normalize_heading(line: str) -> str:
-    line = line.strip().lower()
-    line = re.sub(r"^\d+(\.\d+)*\s*", "", line)
-    line = re.sub(r"[^a-z\s]", "", line)
-    return re.sub(r"\s+", " ", line).strip()
-
-
-SECTION_ALIASES = {
-    "abstract": {"abstract"},
-    "introduction": {"introduction", "background", "preliminaries", "preliminary"},
-    "method": {
-        "method",
-        "methods",
-        "approach",
-        "approaches",
-        "methodology",
-        "framework",
-        "model",
-        "models",
-    },
-    "experiment": {
-        "experiment",
-        "experiments",
-        "evaluation",
-        "evaluations",
-        "results",
-        "analysis",
-        "ablations",
-        "ablation",
-    },
-    "conclusion": {
-        "conclusion",
-        "conclusions",
-        "discussion",
-        "discussions",
-        "future work",
-        "limitations",
-    },
-}
-
-STOP_SECTION_ALIASES = {
-    "references",
-    "appendix",
-    "appendices",
-    "acknowledgments",
-    "acknowledgements",
-}
-
-
-def match_section_heading(line: str) -> str | None:
-    normalized = normalize_heading(line)
-    if not normalized:
-        return None
-    if normalized in STOP_SECTION_ALIASES:
-        return "stop"
-    for section, aliases in SECTION_ALIASES.items():
-        if normalized in aliases:
-            return section
-    return None
-
-
-def extract_pdf_sections(pdf_path: Path, max_pages: int | None = None) -> dict[str, str]:
-    if fitz is None:
-        return {}
-    sections: dict[str, list[str]] = {"preamble": []}
-    current = "preamble"
-    doc = fitz.open(pdf_path)
-    try:
-        page_limit = len(doc) if max_pages is None else min(len(doc), max_pages)
-        for page_index in range(page_limit):
-            text = doc[page_index].get_text("text")
-            reached_stop = False
-            for raw_line in text.splitlines():
-                line = clean_pdf_line(raw_line)
-                if not line:
-                    continue
-                heading = match_section_heading(line)
-                if heading == "stop":
-                    reached_stop = True
-                    break
-                if heading:
-                    current = heading
-                    sections.setdefault(current, [])
-                    continue
-                sections.setdefault(current, []).append(line)
-            if reached_stop:
-                break
-    finally:
-        doc.close()
-
-    collapsed = {}
-    for key, value in sections.items():
-        if not value:
-            continue
-        text = re.sub(r"\s+", " ", " ".join(value)).strip()
-        if text:
-            collapsed[key] = text
-    return collapsed
-
-
-def extract_pdf_text(pdf_path: Path, max_pages: int | None = None) -> str:
-    if fitz is None:
-        return ""
-    doc = fitz.open(pdf_path)
-    try:
-        page_limit = len(doc) if max_pages is None else min(len(doc), max_pages)
-        texts = [doc[i].get_text("text") for i in range(page_limit)]
-    finally:
-        doc.close()
-    return "\n".join(texts)
 
 
 def is_plausible_pdf_title_line(line: str) -> bool:
@@ -1354,9 +1079,16 @@ def choose_local_pdf_corrected_title(base: dict[str, Any], candidates: list[dict
         for candidate in candidates
         if normalize_whitespace(str(candidate.get("title", "")))
     ]
-    best = choose_best_title_match(current_title, titled_candidates)
-    if not best:
+    if not titled_candidates:
         return ""
+    best = max(
+        titled_candidates,
+        key=lambda item: (
+            title_similarity(current_title, str(item.get("title", ""))),
+            candidate_priority_score(item),
+            publication_quality_score(item),
+        ),
+    )
     candidate_title = normalize_whitespace(str(best.get("title", "")))
     if not candidate_title:
         return ""
@@ -1365,416 +1097,3 @@ def choose_local_pdf_corrected_title(base: dict[str, Any], candidates: list[dict
     if not (best.get("doi") or best.get("arxiv_id") or publication_quality_score(best) >= 2):
         return ""
     return candidate_title
-
-
-def extract_caption_lines(pdf_text: str, kind: str) -> list[dict[str, str]]:
-    results: list[dict[str, str]] = []
-    seen = set()
-    lines = [clean_pdf_line(line) for line in pdf_text.splitlines()]
-    if kind == "figure":
-        pattern = re.compile(r"^(fig(?:ure)?\.?\s*\d+[a-z]?)[:.\s-]*(.*)$", re.IGNORECASE)
-    else:
-        pattern = re.compile(r"^(table\.?\s*\d+[a-z]?)[:.\s-]*(.*)$", re.IGNORECASE)
-    for idx, line in enumerate(lines):
-        if not line:
-            continue
-        match = pattern.match(line)
-        if not match:
-            continue
-        label = normalize_whitespace(match.group(1))
-        caption = normalize_whitespace(match.group(2))
-        if not caption and idx + 1 < len(lines):
-            caption = normalize_whitespace(lines[idx + 1])
-        marker = f"{label.lower()}::{caption.lower()}"
-        if marker in seen:
-            continue
-        seen.add(marker)
-        results.append({"id": label, "caption": caption})
-    return results
-
-
-def infer_paper_type(title: str, abstract: str) -> tuple[str, str]:
-    lower = f"{title} {abstract}".lower()
-    if any(token in lower for token in ["survey", "overview", "tutorial"]):
-        return (
-            "humanities_or_social_science",
-            "The paper is survey-like or overview-oriented rather than a single empirical ",
-            "method report.",
-        )
-    if any(
-        token in lower
-        for token in ["benchmark", "leaderboard", "evaluation suite", "dataset", "corpus"]
-    ):
-        return (
-            "benchmark_or_dataset",
-            "The paper emphasizes benchmark, dataset, or evaluation design.",
-        )
-    if any(
-        token in lower
-        for token in [
-            "depression",
-            "anxiety",
-            "mental health",
-            "clinical",
-            "patient",
-            "psychiatric",
-            "psychological",
-            "hospital",
-        ]
-    ):
-        return (
-            "clinical_or_psychology_empirical",
-            "The paper is closer to an empirical clinical or psychology study.",
-        )
-    return "AI_method", "The paper is best treated as a method-focused technical paper."
-
-
-def extract_dataset_candidates(text: str) -> list[str]:
-    found: list[str] = []
-    seen = set()
-    for sentence in split_sentences(text):
-        if not any(
-            token in sentence.lower()
-            for token in ["dataset", "benchmark", "corpus", "participants", "patients"]
-        ):
-            continue
-        candidates = re.findall(
-            r"\b[A-Z][A-Za-z0-9+\-]{2,}(?:[ -][A-Z][A-Za-z0-9+\-]{2,})?\b", sentence
-        )
-        for candidate in candidates:
-            norm = candidate.lower()
-            if norm in seen:
-                continue
-            seen.add(norm)
-            found.append(candidate)
-            if len(found) >= 8:
-                return found
-    return found
-
-
-def extract_metric_claims(text: str) -> list[str]:
-    claims: list[str] = []
-    seen = set()
-    for sentence in split_sentences(text):
-        lower = sentence.lower()
-        if not re.search(r"\d", sentence):
-            continue
-        if not any(
-            token in lower
-            for token in [
-                "accuracy",
-                "f1",
-                "auc",
-                "auprc",
-                "mae",
-                "rmse",
-                "score",
-                "%",
-                "outperform",
-                "improv",
-                "bac",
-            ]
-        ):
-            continue
-        normalized = normalize_whitespace(sentence)
-        key = normalize_title(normalized)
-        if key in seen:
-            continue
-        seen.add(key)
-        claims.append(normalized)
-        if len(claims) >= 8:
-            break
-    return claims
-
-
-def extract_negative_claims(text: str, *, limit: int = 6) -> list[str]:
-    claims: list[str] = []
-    seen = set()
-    explicit_negative_tokens = [
-        "worse",
-        "degrade",
-        "degraded",
-        "drop",
-        "dropped",
-        "decrease",
-        "decreased",
-        "unstable",
-        "instability",
-        "fail",
-        "failed",
-        "fails",
-        "collapse",
-        "collapsed",
-        "underperform",
-        "underperformed",
-        "sensitive",
-        "sensitivity",
-        "trade-off",
-        "tradeoff",
-        "hurt performance",
-        "hurts performance",
-    ]
-    ablation_tokens = [
-        "without",
-        "w/o",
-        "remove",
-        "removed",
-        "removing",
-        "omit",
-        "omits",
-        "omitted",
-        "omitting",
-        "ablation",
-    ]
-    performance_tokens = [
-        "accuracy",
-        "f1",
-        "auc",
-        "auprc",
-        "mae",
-        "rmse",
-        "score",
-        "performance",
-        "%",
-        "result",
-        "results",
-        "training",
-        "converge",
-        "convergence",
-        "stable",
-        "stability",
-        "baseline",
-    ]
-    positive_only_tokens = [
-        "outperform",
-        "improv",
-        "better than",
-        "achieve",
-        "state-of-the-art",
-        "sota",
-    ]
-
-    for sentence in split_sentences(text):
-        normalized = normalize_whitespace(sentence)
-        if not normalized:
-            continue
-        lower = normalized.lower()
-        has_explicit_negative = any(token in lower for token in explicit_negative_tokens)
-        has_ablation_marker = any(token in lower for token in ablation_tokens)
-        has_performance_context = any(token in lower for token in performance_tokens) or bool(
-            re.search(r"\d", normalized)
-        )
-        has_positive_only = any(token in lower for token in positive_only_tokens)
-
-        if not has_explicit_negative:
-            if not (has_ablation_marker and has_performance_context):
-                continue
-            if has_positive_only and not any(
-                token in lower for token in ["trade-off", "tradeoff", "sensitive", "stability"]
-            ):
-                continue
-
-        key = normalize_title(normalized)
-        if key in seen:
-            continue
-        seen.add(key)
-        claims.append(normalized)
-        if len(claims) >= limit:
-            break
-    return claims
-
-
-def extract_mechanism_flow_sentences(text: str, *, limit: int = 8) -> list[str]:
-    claims: list[str] = []
-    seen = set()
-    action_tokens = [
-        "encode",
-        "encoded",
-        "encoding",
-        "extract",
-        "extracted",
-        "project",
-        "projected",
-        "pool",
-        "pooled",
-        "fuse",
-        "fused",
-        "fusion",
-        "concat",
-        "concatenate",
-        "query",
-        "queried",
-        "align",
-        "aligned",
-        "compress",
-        "compressed",
-        "send",
-        "sent",
-        "feed",
-        "fed",
-        "generate",
-        "generated",
-        "predict",
-        "predicted",
-        "decode",
-        "decoded",
-        "update",
-        "updated",
-        "freeze",
-        "frozen",
-        "fine-tune",
-        "finetune",
-    ]
-    flow_tokens = [
-        "input",
-        "inputs",
-        "output",
-        "outputs",
-        "token",
-        "tokens",
-        "feature",
-        "features",
-        "representation",
-        "representations",
-        "encoder",
-        "decoder",
-        "attention",
-        "module",
-        "modules",
-        "llm",
-        "language model",
-        "query token",
-        "cross-attention",
-        "projection",
-        "state",
-        "states",
-    ]
-
-    for sentence in split_sentences(text):
-        normalized = normalize_whitespace(sentence)
-        if not normalized:
-            continue
-        lower = normalized.lower()
-        if not any(token in lower for token in action_tokens):
-            continue
-        if not any(token in lower for token in flow_tokens):
-            continue
-        key = normalize_title(normalized)
-        if key in seen:
-            continue
-        seen.add(key)
-        claims.append(normalized)
-        if len(claims) >= limit:
-            break
-    return claims
-
-
-def pick_sentences_by_keywords(text: str, keywords: list[str], *, limit: int = 5) -> list[str]:
-    picked: list[str] = []
-    seen = set()
-    for sentence in split_sentences(text):
-        lower = sentence.lower()
-        if not any(keyword in lower for keyword in keywords):
-            continue
-        normalized = normalize_title(sentence)
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        picked.append(normalize_whitespace(sentence))
-        if len(picked) >= limit:
-            break
-    return picked
-
-
-TERM_REPLACEMENTS = [
-    (r"\bLarge Language Models?\b", "大语言模型"),
-    (r"\bLLMs?\b", "大语言模型"),
-    (r"\bbenchmark(s)?\b", "基准测试"),
-    (r"\bmultimodal\b", "多模态"),
-    (r"\bvision-language\b", "视觉语言"),
-    (r"\bfine-tuning\b", "微调"),
-    (r"\binference\b", "推理"),
-    (r"\breasoning\b", "推理"),
-    (r"\bagent(s)?\b", "智能体"),
-    (r"\bframework(s)?\b", "框架"),
-    (r"\bmodel(s)?\b", "模型"),
-    (r"\bpipeline(s)?\b", "流程"),
-    (r"\bdataset(s)?\b", "数据集"),
-]
-
-
-def apply_term_replacements(text: str) -> str:
-    updated = normalize_whitespace(text)
-    for pattern, replacement in TERM_REPLACEMENTS:
-        updated = re.sub(pattern, replacement, updated, flags=re.IGNORECASE)
-    updated = re.sub(r"\s+", " ", updated).strip(" .;,:")
-    return updated
-
-
-def shorten_clause(text: str, max_len: int = 140) -> str:
-    cleaned = normalize_whitespace(text)
-    if len(cleaned) <= max_len:
-        return cleaned
-    pivot = cleaned[:max_len].rsplit(" ", 1)[0]
-    return (pivot or cleaned[:max_len]).rstrip(",;:") + "..."
-
-
-def english_sentence_to_cn(sentence: str) -> str:
-    raw = normalize_whitespace(sentence).rstrip(".")
-    if not raw:
-        return ""
-
-    converted = apply_term_replacements(raw)
-    converted = re.sub(r"\bet al\.?\b", "等人", converted, flags=re.IGNORECASE)
-
-    patterns = [
-        (r"^This paper (?:studies|investigates) (.+)$", "这篇论文研究的是%s。"),
-        (r"^This work (?:studies|investigates) (.+)$", "这项工作研究的是%s。"),
-        (r"^This paper presents (.+)$", "这篇论文提出了%s。"),
-        (r"^This work presents (.+)$", "这项工作提出了%s。"),
-        (r"^We propose (.+)$", "作者提出了%s。"),
-        (r"^We present (.+)$", "作者提出了%s。"),
-        (r"^We introduce (.+)$", "作者引入了%s。"),
-        (r"^To evaluate (.+)$", "为了评估%s。"),
-        (r"^Experiments show that (.+)$", "实验结果表明%s。"),
-        (r"^Results show that (.+)$", "结果表明%s。"),
-        (r"^However,? (.+)$", "但需要注意的是，%s。"),
-    ]
-    for pattern, template in patterns:
-        match = re.match(pattern, converted, flags=re.IGNORECASE)
-        if match:
-            return template % shorten_clause(match.group(1))
-
-    if converted.lower().startswith("the paper"):
-        converted = re.sub(r"^the paper", "论文", converted, flags=re.IGNORECASE)
-    elif converted.lower().startswith("this paper"):
-        converted = re.sub(r"^this paper", "这篇论文", converted, flags=re.IGNORECASE)
-    elif converted.lower().startswith("this work"):
-        converted = re.sub(r"^this work", "这项工作", converted, flags=re.IGNORECASE)
-    return shorten_clause(converted)
-
-
-def paraphrase_sentences_to_cn(sentences: list[str], *, limit: int = 4) -> list[str]:
-    rewritten: list[str] = []
-    seen = set()
-    for sentence in sentences:
-        cn = english_sentence_to_cn(sentence)
-        marker = normalize_title(cn)
-        if not cn or marker in seen:
-            continue
-        seen.add(marker)
-        rewritten.append(cn)
-        if len(rewritten) >= limit:
-            break
-    return rewritten
-
-
-def finalize_cn_line(text: str, *, max_len: int = 140) -> str:
-    cleaned = normalize_whitespace(text)
-    if not cleaned:
-        return ""
-    if re.search(r"[A-Za-z]", cleaned) and not re.search(r"[\u4e00-\u9fff]", cleaned):
-        cleaned = english_sentence_to_cn(cleaned)
-    else:
-        cleaned = apply_term_replacements(cleaned)
-    return shorten_clause(cleaned, max_len=max_len)

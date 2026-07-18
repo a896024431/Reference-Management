@@ -45,6 +45,9 @@ def parser() -> argparse.ArgumentParser:
         "--supplement", action="append", default=[], help="Supplement PDF path or URL; repeatable."
     )
     command.add_argument("--dest-dir", default="", help="Download directory for fetch stage.")
+    command.add_argument(
+        "--vault-root", default="", help="Record local PDFs with a safe Vault-relative path."
+    )
     command.add_argument("--offline", action="store_true", help="Skip network metadata enrichment.")
     return command
 
@@ -67,8 +70,12 @@ def resolve_stage(value: str, *, run_id: str, paper_id: str = "") -> dict[str, A
     trusted = maybe_load_json_record(value)
     seed = dict(trusted) if trusted is not None else resolve_reference(value)
     payload = new_paper_record(seed, run_id=run_id, paper_id=paper_id)
+    resolution_status = str(seed.get("status", "ok"))
     title = str(payload["paper_record"]["metadata"].get("title", "")).strip()
-    if not title:
+    if resolution_status in {"ambiguous", "unresolved"}:
+        payload["status"] = "fail"
+        payload["failures"] = [f"paper_identity_{resolution_status}"]
+    elif not title:
         payload["status"] = "fail"
         payload["failures"] = ["paper_identity_missing_title"]
     validate_paper_record_artifact(payload)
@@ -92,7 +99,7 @@ def metadata_stage(artifact: dict[str, Any], *, offline: bool = False) -> dict[s
 
 def _page_count(path: Path) -> int:
     if fitz is None:
-        return 0
+        raise ContractError("PyMuPDF/fitz is required to inspect PDF page counts")
     document = fitz.open(path)
     try:
         return len(document)
@@ -100,13 +107,30 @@ def _page_count(path: Path) -> int:
         document.close()
 
 
-def _document(path: Path, *, role: str, source: str, url: str = "") -> dict[str, Any]:
+def _vault_relative(path: Path, vault_root: Path | None) -> str:
+    if vault_root is None:
+        return ""
+    try:
+        return path.resolve().relative_to(vault_root.resolve()).as_posix()
+    except ValueError:
+        return ""
+
+
+def _document(
+    path: Path,
+    *,
+    role: str,
+    source: str,
+    url: str = "",
+    vault_root: Path | None = None,
+) -> dict[str, Any]:
     resolved = path.expanduser().resolve()
     digest = sha256_file(resolved)
     return {
         "document_id": stable_id("doc", role, digest),
         "role": role,
         "path": str(resolved),
+        "vault_path": _vault_relative(resolved, vault_root),
         "url": url,
         "source": source,
         "sha256": digest,
@@ -170,12 +194,16 @@ def fetch_stage(
     *,
     supplements: list[str],
     dest_dir: str = "",
+    vault_root: str = "",
 ) -> dict[str, Any]:
     validate_paper_record_artifact(artifact)
     record = artifact["paper_record"]
     metadata = record["metadata"]
     target_dir = Path(dest_dir or ".local/deeppapernote/pdfs").expanduser().resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(vault_root).expanduser().resolve() if vault_root else None
+    if root is not None and (not root.exists() or not root.is_dir()):
+        raise ContractError(f"Vault root is not a directory: {root}")
     failures: list[str] = []
     documents: list[dict[str, Any]] = []
 
@@ -191,7 +219,9 @@ def fetch_stage(
                 role="main",
                 fallback_name=fallback,
             )
-            documents.append(_document(main_path, role="main", source=source, url=url))
+            documents.append(
+                _document(main_path, role="main", source=source, url=url, vault_root=root)
+            )
         except Exception as exc:
             failures.append(f"main_pdf_failed: {exc}")
 
@@ -212,7 +242,9 @@ def fetch_stage(
                 role="supplement",
                 fallback_name=f"supplement-{index}.pdf",
             )
-            documents.append(_document(path, role="supplement", source=source, url=url))
+            documents.append(
+                _document(path, role="supplement", source=source, url=url, vault_root=root)
+            )
         except Exception as exc:
             failures.append(f"supplement_pdf_failed[{index}]: {exc}")
 
@@ -221,7 +253,7 @@ def fetch_stage(
     if not any(document["role"] == "main" for document in documents):
         artifact["status"] = "fail"
     elif failures:
-        artifact["status"] = "degraded"
+        artifact["status"] = "fail"
     else:
         artifact["status"] = "pass"
     validate_paper_record_artifact(artifact)
@@ -247,9 +279,10 @@ def main() -> None:
                 artifact,
                 supplements=args.supplement,
                 dest_dir=args.dest_dir,
+                vault_root=args.vault_root,
             )
     emit_json(artifact, args.output or None)
-    if artifact["status"] == "fail":
+    if artifact["status"] != "pass":
         raise SystemExit(1)
 
 

@@ -7,8 +7,7 @@ from figure_contracts import (
     FigureContractError,
     build_figure_asset_identity,
     figure_note_alignment_issues,
-    make_figure_manifest,
-    materialize_inserted_assets,
+    materialize_decision,
     render_figure_decision_block,
     sha256_bytes,
     validate_figure_decisions,
@@ -72,22 +71,36 @@ def _decisions(asset_id: str, *, outcome: str = "inserted") -> dict:
     }
 
 
+def _manifest(asset: dict) -> dict:
+    return {
+        "schema_version": "2.0",
+        "paper_id": "paper-test",
+        "run_id": "run-test",
+        "status": "ok",
+        "failures": [],
+        "assets": [asset],
+    }
+
+
 def test_manifest_to_materialize_round_trip_is_hash_verified(tmp_path: Path) -> None:
     source = tmp_path / "candidate.png"
     source.write_bytes(b"deterministic-png-fixture")
     asset = _asset(source)
-    manifest = make_figure_manifest(paper_id="paper-test", run_id="run-test", assets=[asset])
+    manifest = _manifest(asset)
     decisions = _decisions(asset["asset_id"])
 
     assert validate_figure_manifest(manifest, verify_files=True) == []
     assert validate_figure_decisions(decisions, manifest=manifest) == []
 
     destination = tmp_path / "note" / "images"
-    materialized = materialize_inserted_assets(
-        manifest=manifest,
-        decisions=decisions,
-        destination_dir=destination,
-    )
+    materialized = [
+        materialize_decision(
+            manifest=manifest,
+            decisions=decisions,
+            target_id="main|fig 2",
+            destination_dir=destination,
+        )
+    ]
 
     assert len(materialized) == 1
     copied = destination / asset["filename"]
@@ -100,14 +113,15 @@ def test_materialization_rejects_manifest_hash_drift(tmp_path: Path) -> None:
     source = tmp_path / "candidate.png"
     source.write_bytes(b"original")
     asset = _asset(source)
-    manifest = make_figure_manifest(paper_id="paper-test", run_id="run-test", assets=[asset])
+    manifest = _manifest(asset)
     decisions = _decisions(asset["asset_id"])
     source.write_bytes(b"changed-after-manifest")
 
     with pytest.raises(FigureContractError, match="source_hash_mismatch"):
-        materialize_inserted_assets(
+        materialize_decision(
             manifest=manifest,
             decisions=decisions,
+            target_id="main|fig 2",
             destination_dir=tmp_path / "images",
         )
 
@@ -116,7 +130,7 @@ def test_rejected_candidate_cannot_be_selected(tmp_path: Path) -> None:
     source = tmp_path / "reject.png"
     source.write_bytes(b"caption-only")
     asset = _asset(source, quality="reject")
-    manifest = make_figure_manifest(paper_id="paper-test", run_id="run-test", assets=[asset])
+    manifest = _manifest(asset)
     decisions = _decisions(asset["asset_id"])
     decisions["decisions"][0]["rejected_asset_ids"] = [asset["asset_id"]]
 
@@ -171,6 +185,7 @@ def test_placeholder_decision_is_run_only_and_needs_no_visible_callout(tmp_path:
 
     assert render_figure_decision_block(placeholder["decisions"][0]) == ""
     assert figure_note_alignment_issues(note, placeholder) == []
+
 
 def _planner_record(*, reason: str, outcome: str = "placeholder") -> dict:
     return {

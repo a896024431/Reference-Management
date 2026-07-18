@@ -175,8 +175,10 @@ def validate_paper_record_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     if record.get("paper_id") != artifact.get("paper_id"):
         raise ContractError("paper_record.paper_id must match artifact paper_id")
     metadata = record.get("metadata")
-    if not isinstance(metadata, dict) or not str(metadata.get("title", "")).strip():
-        raise ContractError("paper_record.metadata.title is required")
+    if not isinstance(metadata, dict):
+        raise ContractError("paper_record.metadata must be an object")
+    if artifact["status"] != "fail" and not str(metadata.get("title", "")).strip():
+        raise ContractError("paper_record.metadata.title is required for a usable record")
     documents = record.get("documents")
     if not isinstance(documents, list):
         raise ContractError("paper_record.documents must be a list")
@@ -190,29 +192,111 @@ def validate_paper_record_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     return artifact
 
 
+NOTE_PLAN_FIELDS = (
+    "paper_type",
+    "dominant_domain",
+    "evidence_ids",
+    "must_cover",
+    "key_claims",
+    "key_numbers",
+    "real_comparisons",
+    "section_plan",
+    "figure_intents",
+)
+NOTE_PLAN_ENTRY_FIELDS = {
+    "must_cover": "topic",
+    "key_claims": "claim",
+    "key_numbers": "number",
+    "real_comparisons": "comparison",
+    "section_plan": "section",
+    "figure_intents": "target_id",
+}
+NOTE_PLAN_REQUIRED_LISTS = ("must_cover", "key_claims", "section_plan")
+
+
+def _evidence_id_list(value: Any, *, path: str, allow_empty: bool) -> list[str]:
+    if not isinstance(value, list):
+        raise ContractError(f"{path} must be a list")
+    normalized = [str(item).strip() for item in value]
+    if any(not item for item in normalized):
+        raise ContractError(f"{path} must contain only non-empty evidence IDs")
+    if len(normalized) != len(set(normalized)):
+        raise ContractError(f"{path} must not contain duplicate evidence IDs")
+    if not allow_empty and not normalized:
+        raise ContractError(f"{path} must not be empty")
+    return normalized
+
+
+def note_plan_bound_evidence_ids(plan: dict[str, Any]) -> set[str]:
+    bound: set[str] = set()
+    for field in NOTE_PLAN_ENTRY_FIELDS:
+        entries = plan.get(field, [])
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict) and isinstance(entry.get("evidence_ids"), list):
+                bound.update(
+                    str(item).strip() for item in entry["evidence_ids"] if str(item).strip()
+                )
+    return bound
+
+
 def validate_note_plan_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     require_v2_artifact(artifact, artifact_type="note_plan", allow_statuses={"pass"})
     plan = artifact.get("note_plan")
     if not isinstance(plan, dict):
         raise ContractError("note_plan object is required")
-    required = (
-        "paper_type",
-        "dominant_domain",
-        "must_cover",
-        "key_numbers",
-        "real_comparisons",
-        "section_plan",
-    )
-    missing = [key for key in required if key not in plan]
+    missing = [key for key in NOTE_PLAN_FIELDS if key not in plan]
     if missing:
         raise ContractError(f"note_plan missing fields: {', '.join(missing)}")
+    unexpected = sorted(set(plan) - set(NOTE_PLAN_FIELDS))
+    if unexpected:
+        raise ContractError(f"note_plan has unexpected fields: {', '.join(unexpected)}")
     if plan["paper_type"] not in PAPER_TYPES:
         raise ContractError(f"Invalid paper_type: {plan['paper_type']!r}")
-    for key in ("must_cover", "key_numbers", "real_comparisons", "section_plan"):
-        if not isinstance(plan[key], list):
-            raise ContractError(f"note_plan.{key} must be a list")
-    if not plan["must_cover"] or not plan["section_plan"]:
-        raise ContractError("note_plan must_cover and section_plan must not be empty")
+    if not str(plan["dominant_domain"]).strip():
+        raise ContractError("note_plan.dominant_domain must not be empty")
+
+    top_level_ids = set(
+        _evidence_id_list(
+            plan["evidence_ids"],
+            path="note_plan.evidence_ids",
+            allow_empty=False,
+        )
+    )
+    for field, content_field in NOTE_PLAN_ENTRY_FIELDS.items():
+        entries = plan[field]
+        if not isinstance(entries, list):
+            raise ContractError(f"note_plan.{field} must be a list")
+        if field in NOTE_PLAN_REQUIRED_LISTS and not entries:
+            raise ContractError(f"note_plan.{field} must not be empty")
+        for index, entry in enumerate(entries):
+            path = f"note_plan.{field}[{index}]"
+            if not isinstance(entry, dict):
+                raise ContractError(f"{path} must be an object")
+            unexpected_entry_fields = sorted(set(entry) - {content_field, "evidence_ids"})
+            if unexpected_entry_fields:
+                raise ContractError(
+                    f"{path} has unexpected fields: {', '.join(unexpected_entry_fields)}"
+                )
+            if not str(entry.get(content_field, "")).strip():
+                raise ContractError(f"{path}.{content_field} must not be empty")
+            _evidence_id_list(
+                entry.get("evidence_ids"),
+                path=f"{path}.evidence_ids",
+                allow_empty=False,
+            )
+
+    bound_ids = note_plan_bound_evidence_ids(plan)
+    if top_level_ids != bound_ids:
+        missing_from_index = sorted(bound_ids - top_level_ids)
+        unused_in_index = sorted(top_level_ids - bound_ids)
+        details = []
+        if missing_from_index:
+            details.append("missing_from_evidence_ids=" + ",".join(missing_from_index))
+        if unused_in_index:
+            details.append("unused_evidence_ids=" + ",".join(unused_in_index))
+        raise ContractError("note_plan evidence index mismatch: " + "; ".join(details))
     return artifact
 
 
@@ -232,12 +316,38 @@ READABILITY_SCORE_FIELDS = (
 )
 
 
+REVIEW_ORIGINS = {"subagent", "human"}
+
+
 def validate_review_artifact(artifact: dict[str, Any], *, kind: str) -> dict[str, Any]:
+    if kind not in {"quality", "readability"}:
+        raise ContractError(f"Unknown review kind: {kind}")
     expected_type = f"{kind}_review"
     require_v2_artifact(artifact, artifact_type=expected_type, allow_statuses={"pass"})
     review = artifact.get("review")
     if not isinstance(review, dict):
         raise ContractError("review object is required")
+
+    author = str(artifact.get("author", "")).strip()
+    reviewer = str(artifact.get("reviewer", "")).strip()
+    origin = str(artifact.get("review_origin", "")).strip()
+    if not author:
+        raise ContractError("Passing review must identify its author")
+    if not reviewer:
+        raise ContractError("Passing review must identify its reviewer")
+    if origin not in REVIEW_ORIGINS:
+        raise ContractError(f"review_origin must be one of {sorted(REVIEW_ORIGINS)}")
+    if author.casefold() == reviewer.casefold():
+        raise ContractError("Review author and reviewer must be different")
+    if review.get("independent") is not True:
+        raise ContractError("Passing review must be explicitly independent")
+    if str(review.get("author", "")).strip() != author:
+        raise ContractError("review.author must match artifact author")
+    if str(review.get("reviewer", "")).strip() != reviewer:
+        raise ContractError("review.reviewer must match artifact reviewer")
+    if str(review.get("review_origin", "")).strip() != origin:
+        raise ContractError("review.review_origin must match artifact review_origin")
+
     fields = QUALITY_SCORE_FIELDS if kind == "quality" else READABILITY_SCORE_FIELDS
     scores = review.get("scores")
     if not isinstance(scores, dict):

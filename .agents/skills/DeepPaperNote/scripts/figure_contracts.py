@@ -133,25 +133,6 @@ def ensure_asset_identity(asset: dict[str, Any], *, document_id: str = "main") -
     return item
 
 
-def make_figure_manifest(
-    *,
-    paper_id: str,
-    run_id: str,
-    assets: Iterable[dict[str, Any]],
-    failures: Iterable[str] | None = None,
-    status: str = "ok",
-) -> dict[str, Any]:
-    normalized = [ensure_asset_identity(asset) for asset in assets]
-    return {
-        "schema_version": FIGURE_SCHEMA_VERSION,
-        "paper_id": str(paper_id or ""),
-        "run_id": str(run_id or ""),
-        "status": status,
-        "failures": list(failures or []),
-        "assets": normalized,
-    }
-
-
 def index_manifest_assets(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         str(asset.get("asset_id")): asset
@@ -336,24 +317,6 @@ def materialize_decision(
         "filename": destination.name,
         "file_sha256": source_hash,
     }
-
-
-def materialize_inserted_assets(
-    *,
-    manifest: dict[str, Any],
-    decisions: dict[str, Any],
-    destination_dir: str | Path,
-) -> list[dict[str, Any]]:
-    return [
-        materialize_decision(
-            manifest=manifest,
-            decisions=decisions,
-            target_id=str(decision["target_id"]),
-            destination_dir=destination_dir,
-        )
-        for decision in decisions.get("decisions", [])
-        if isinstance(decision, dict) and decision.get("decision") == "inserted"
-    ]
 
 
 def render_figure_decision_block(

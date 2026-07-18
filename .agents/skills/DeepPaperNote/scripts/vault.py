@@ -78,7 +78,7 @@ PROPERTY_ENUMS = {
         "humanities",
         "generic",
     },
-    "evidence_level": {"abstract_only", "full_text", "full_text_supplement"},
+    "evidence_level": {"full_text", "full_text_supplement"},
     "note_status": {"draft", "reviewed", "polished", "degraded"},
     "figure_status": {"complete", "partial", "placeholder_only", "none_needed"},
 }
@@ -1114,89 +1114,3 @@ def render_unvalidated_frontmatter(properties: Mapping[str, Any]) -> str:
         else:
             lines.append(f"{key}: {value}")
     return "\n".join(lines) + "\n"
-
-
-def render_note_scaffold(properties: Mapping[str, Any]) -> str:
-    """Render the v2 one-file/two-layer note scaffold.
-
-    This is a planning scaffold, not publishable prose.  The marker makes that
-    explicit so a model or migration tool cannot mistake it for a finished note.
-    """
-    frontmatter = render_frontmatter(properties)
-    title = str(properties["title_zh"])
-    sections = f"""\
-<!-- DeepPaperNote v2 draft scaffold: replace every TODO before quality review. -->
-# {title}
-
-## 30 秒速览
-
-- **研究问题：** TODO
-- **核心结论：** TODO
-- **为什么重要：** TODO
-- **证据可信度：** TODO
-
-### 关键结论
-
-1. TODO（证据：主文/补充材料 p. X，Fig./Table/Eq. X）
-2. TODO（证据：主文/补充材料 p. X，Fig./Table/Eq. X）
-3. TODO（证据：主文/补充材料 p. X，Fig./Table/Eq. X）
-
-### 关键数字
-
-- TODO：数值、单位、实验或理论条件及其物理含义。
-
-### 适用边界
-
-TODO
-
-### 快速入口
-
-- [原文或 DOI](TODO)
-- [[#研究背景、真正问题与创新|进入精读层]]
-
-### 术语与符号
-
-- TODO：只保留真正影响理解的 3–8 个术语或符号。
-
-## 原文摘要翻译
-
-> [!abstract]- 展开摘要译文
-> TODO
-
-## 研究背景、真正问题与创新
-
-TODO
-
-## 实验体系或理论模型
-
-TODO
-
-## 方法与测量／推断链
-
-TODO
-
-## 主要结果与证据
-
-TODO
-
-## 物理解释、替代解释与证据边界
-
-TODO
-
-## 局限与未决问题
-
-TODO
-
-## 可复用结论
-
-TODO
-
-## 相关论文
-
-TODO
-
-## 引用
-
-TODO
-"""
-    return frontmatter + "\n" + sections

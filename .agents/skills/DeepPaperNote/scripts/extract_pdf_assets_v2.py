@@ -21,7 +21,7 @@ from contracts_v2 import (
     require_same_identity,
     validate_paper_record_artifact,
 )
-from figure_contracts import build_figure_asset_identity, sha256_bytes, sha256_file
+from figure_contracts import build_figure_asset_identity, sha256_bytes
 from figure_contracts_v2 import make_figure_manifest
 
 CAPTION_START_RE = re.compile(
@@ -140,37 +140,6 @@ def _find_caption_blocks(page) -> list[dict[str, Any]]:
             )
     anchors.sort(key=lambda anchor: (anchor["bbox"][1], anchor["bbox"][0]))
     return anchors
-
-
-def _resolve_document(record: dict[str, Any], pdf_path: Path) -> tuple[str, str]:
-    resolved_pdf = pdf_path.resolve()
-    for document in record.get("documents", []) or []:
-        if not isinstance(document, dict):
-            continue
-        candidate = str(document.get("path", "") or document.get("pdf_path", "")).strip()
-        try:
-            matches = bool(candidate) and Path(candidate).expanduser().resolve() == resolved_pdf
-        except OSError:
-            matches = False
-        if matches:
-            return (
-                str(document.get("document_id", "") or "main"),
-                str(document.get("role", "") or "main"),
-            )
-    return (
-        str(record.get("document_id", "") or "main"),
-        str(record.get("document_role", "") or "main"),
-    )
-
-
-def _stable_run_identity(record: dict[str, Any], pdf_path: Path) -> tuple[str, str, str]:
-    pdf_hash = sha256_file(pdf_path)
-    paper_id = str(record.get("paper_id", "")).strip()
-    if not paper_id:
-        identity_seed = str(record.get("title", "")).strip() or pdf_hash
-        paper_id = f"paper-{sha256_bytes(identity_seed.encode('utf-8'))[:16]}"
-    run_id = str(record.get("run_id", "")).strip() or f"run-{paper_id}-{pdf_hash[:12]}"
-    return paper_id, run_id, pdf_hash
 
 
 def extract_page_images_v2(

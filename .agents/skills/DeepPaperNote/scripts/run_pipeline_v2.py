@@ -4,13 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from contracts_v2 import artifact_header, emit_json, load_json_object, utc_run_id
+from contracts_v2 import (
+    artifact_header,
+    emit_json,
+    load_json_object,
+    require_v2_artifact,
+    utc_run_id,
+)
 from figure_contracts_v2 import normalize_figure_decisions, normalize_figure_manifest
 
 
@@ -29,6 +36,25 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--offline", action="store_true")
     command.add_argument("--max-pages", type=int, default=0, help="0 means all pages.")
     return command
+
+
+def validate_environment(args: argparse.Namespace) -> None:
+    if sys.version_info < (3, 10):
+        raise SystemExit("DeepPaperNote requires Python 3.10 or newer")
+    if importlib.util.find_spec("fitz") is None:
+        raise SystemExit("PyMuPDF/fitz is required before starting a run")
+    if args.max_pages < 0:
+        raise SystemExit("--max-pages must be non-negative")
+    if args.vault_root:
+        root = Path(args.vault_root).expanduser().resolve()
+        if not root.exists() or not root.is_dir():
+            raise SystemExit(f"--vault-root is not a directory: {root}")
+
+
+def require_pass(path: Path, *, artifact_type: str) -> dict[str, Any]:
+    artifact = load_json_object(path)
+    require_v2_artifact(artifact, artifact_type=artifact_type, allow_statuses={"pass"})
+    return artifact
 
 
 def run(command: list[str], *, stage: str, log: list[dict[str, Any]]) -> None:
@@ -61,12 +87,15 @@ def write_plan_template(bundle: dict[str, Any], output: Path) -> None:
         "real_comparisons": [],
         "section_plan": [],
         "evidence_ids": [],
+        "key_claims": [],
+        "figure_intents": [],
     }
     emit_json(artifact, output)
 
 
 def main() -> None:
     args = parser().parse_args()
+    validate_environment(args)
     run_id = args.run_id or utc_run_id()
     run_dir = Path(args.workdir).expanduser().resolve() / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -98,7 +127,10 @@ def main() -> None:
             ]
             if args.vault_root:
                 command.extend(["--vault-root", args.vault_root])
+            for supplement in args.supplement:
+                command.extend(["--supplement", supplement])
             run(command, stage="create_paper_record", log=log)
+            require_pass(paths["paper_record"], artifact_type="paper_record")
         else:
             resolved = run_dir / "paper_record.resolved.json"
             metadata = run_dir / "paper_record.metadata.json"
@@ -114,6 +146,7 @@ def main() -> None:
                     run_id,
                     "--output",
                     str(resolved),
+                    *(["--vault-root", args.vault_root] if args.vault_root else []),
                 ],
                 stage="resolve_paper",
                 log=log,
@@ -145,7 +178,10 @@ def main() -> None:
             ]
             for supplement in args.supplement:
                 fetch_command.extend(["--supplement", supplement])
+            if args.vault_root:
+                fetch_command.extend(["--vault-root", args.vault_root])
             run(fetch_command, stage="fetch_pdf", log=log)
+            require_pass(paths["paper_record"], artifact_type="paper_record")
 
         run(
             [
@@ -161,6 +197,7 @@ def main() -> None:
             stage="extract_evidence",
             log=log,
         )
+        require_pass(paths["evidence_pack"], artifact_type="evidence_pack")
         run(
             [
                 python,
@@ -232,6 +269,7 @@ def main() -> None:
                 "completion_stage": "synthesis_bundle",
                 "downstream_pending": [
                     "model_note_plan",
+                    "validate_note_plan_v2",
                     "model_note_draft",
                     "lint_note_v2",
                     "quality_review",

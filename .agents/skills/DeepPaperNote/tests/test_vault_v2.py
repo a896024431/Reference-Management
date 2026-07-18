@@ -19,7 +19,6 @@ from vault import (  # noqa: E402
     parse_base_definition,
     parse_frontmatter,
     render_frontmatter,
-    render_note_scaffold,
     resolve_link_target,
     validate_frontmatter_properties,
     validate_image_file,
@@ -118,15 +117,6 @@ class FrontmatterTests(unittest.TestCase):
         properties["local_pdf"] = r"C:\Users\reader\paper.pdf"
         codes = {issue["code"] for issue in validate_frontmatter_properties(properties)}
         self.assertIn("local_source_absolute", codes)
-
-    def test_scaffold_contains_both_reading_layers(self) -> None:
-        scaffold = render_note_scaffold(valid_properties())
-        self.assertIn("## 30 秒速览", scaffold)
-        self.assertIn("### 关键结论", scaffold)
-        self.assertIn("## 主要结果与证据", scaffold)
-        self.assertIn("## 物理解释、替代解释与证据边界", scaffold)
-        self.assertIn("DeepPaperNote v2 draft scaffold", scaffold)
-
 
 class LinkResolutionTests(unittest.TestCase):
     def test_resolves_alias_and_doi(self) -> None:

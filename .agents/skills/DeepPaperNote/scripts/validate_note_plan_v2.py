@@ -11,6 +11,7 @@ from contracts_v2 import (
     artifact_header,
     emit_json,
     load_json_object,
+    note_plan_bound_evidence_ids,
     require_v2_artifact,
     validate_note_plan_artifact,
 )
@@ -32,19 +33,11 @@ def build_note_plan_artifact(
     if not isinstance(plan, dict):
         raise ContractError("note plan input must be an object")
     normalized = dict(plan)
-    normalized.setdefault("paper_type", context.get("paper_type", "generic"))
     evidence_ids = {
         str(item.get("evidence_id", ""))
         for item in context.get("evidence_units", [])
         if isinstance(item, dict) and item.get("evidence_id")
     }
-    cited_ids = normalized.get("evidence_ids", []) or []
-    if not isinstance(cited_ids, list):
-        raise ContractError("note_plan.evidence_ids must be a list when present")
-    unknown = sorted({str(item) for item in cited_ids if str(item) not in evidence_ids})
-    if unknown:
-        raise ContractError(f"note_plan references unknown evidence ids: {', '.join(unknown)}")
-
     artifact = artifact_header(
         "note_plan",
         paper_id=str(context["paper_id"]),
@@ -52,8 +45,16 @@ def build_note_plan_artifact(
         status="pass",
     )
     artifact["note_plan"] = normalized
-    artifact["evidence_reference_count"] = len(cited_ids)
     validate_note_plan_artifact(artifact)
+    if normalized["paper_type"] != context.get("paper_type"):
+        raise ContractError(
+            "note_plan.paper_type must match the synthesis bundle paper_type"
+        )
+    cited_ids = note_plan_bound_evidence_ids(normalized)
+    unknown = sorted(cited_ids - evidence_ids)
+    if unknown:
+        raise ContractError(f"note_plan references unknown evidence ids: {', '.join(unknown)}")
+    artifact["evidence_reference_count"] = len(cited_ids)
     return artifact
 
 

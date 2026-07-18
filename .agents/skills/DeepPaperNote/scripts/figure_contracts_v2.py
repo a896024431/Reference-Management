@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import figure_contracts as _legacy
-from contracts_v2 import SCHEMA_VERSION, artifact_header, require_same_identity, require_v2_artifact
+from contracts_v2 import SCHEMA_VERSION, artifact_header, require_same_identity
 
 FigureContractError = _legacy.FigureContractError
 build_figure_asset_identity = _legacy.build_figure_asset_identity
@@ -98,18 +98,6 @@ def normalize_figure_manifest(
     return artifact
 
 
-def validate_figure_manifest(artifact: dict[str, Any], *, verify_files: bool = False) -> list[str]:
-    issues: list[str] = []
-    try:
-        require_v2_artifact(artifact, artifact_type="figure_manifest")
-    except Exception as exc:
-        issues.append(f"figure_manifest_v2_header_invalid:{exc}")
-    issues.extend(
-        _legacy.validate_figure_manifest(_legacy_copy(artifact), verify_files=verify_files)
-    )
-    return sorted(set(issues))
-
-
 def make_figure_decisions(
     *,
     paper_id: str,
@@ -164,8 +152,6 @@ def normalize_figure_decisions(
         except Exception as exc:
             issues.append(f"figure_contract_identity_invalid:{exc}")
     if require_final:
-        if not entries:
-            issues.append("figure_decisions_empty")
         for index, decision in enumerate(entries):
             if not isinstance(decision, dict):
                 continue
@@ -179,24 +165,6 @@ def normalize_figure_decisions(
     if artifact["failures"]:
         artifact["status"] = "fail"
     return artifact
-
-
-def validate_figure_decisions(
-    artifact: dict[str, Any], *, manifest: dict[str, Any] | None = None
-) -> list[str]:
-    issues: list[str] = []
-    try:
-        require_v2_artifact(artifact, artifact_type="figure_decisions")
-    except Exception as exc:
-        issues.append(f"figure_decisions_v2_header_invalid:{exc}")
-    canonical_manifest = normalize_figure_manifest(manifest) if manifest is not None else None
-    issues.extend(
-        _legacy.validate_figure_decisions(
-            _legacy_copy(artifact),
-            manifest=_legacy_copy(canonical_manifest) if canonical_manifest is not None else None,
-        )
-    )
-    return sorted(set(issues))
 
 
 def materialize_decision(

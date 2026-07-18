@@ -119,7 +119,11 @@ def build_bundle(
     assets: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_paper_record_artifact(paper_record)
-    require_v2_artifact(evidence, artifact_type="evidence_pack")
+    require_v2_artifact(
+        evidence,
+        artifact_type="evidence_pack",
+        allow_statuses={"pass"},
+    )
     paper_id, run_id = require_same_identity(paper_record, evidence)
     figures = figures or {}
     assets = assets or {}
@@ -169,10 +173,13 @@ def build_bundle(
                 "required_fields": [
                     "paper_type",
                     "dominant_domain",
+                    "evidence_ids",
                     "must_cover",
+                    "key_claims",
                     "key_numbers",
                     "real_comparisons",
                     "section_plan",
+                    "figure_intents",
                 ],
                 "evidence_reference_rule": (
                     "关键结论必须引用 evidence_id，并保留主文或补充材料页码。"
@@ -210,9 +217,9 @@ def build_bundle(
                 "traceability_rule": (
                     "每个核心主张必须关联 evidence_id 和主文/SI 页码；有图表或公式编号时一并保留。"
                 ),
-                "degraded_rule": (
-                    "evidence status 非 pass 时不得写成 polished；"
-                    "只能停止或显式生成 degraded note。"
+                "evidence_gate": (
+                    "paper_record 与 evidence_pack 必须均为 pass；"
+                    "任一全文、OCR 或关键证据门禁失败时停止，不生成降级笔记。"
                 ),
             },
         }

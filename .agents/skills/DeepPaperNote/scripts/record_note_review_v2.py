@@ -25,6 +25,7 @@ from contracts_v2 import (
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
     command.add_argument("--kind", required=True, choices=("quality", "readability"))
+    command.add_argument("--author", required=True, help="Identity of the note author.")
     command.add_argument("--input", required=True, help="Markdown note path.")
     command.add_argument("--review", required=True, help="Model/human review JSON.")
     command.add_argument("--context", required=True, help="Schema-v2 synthesis bundle.")
@@ -51,6 +52,7 @@ def _validate_scores(scores: Any, fields: tuple[str, ...]) -> list[str]:
 def build_review_artifact(
     *,
     kind: str,
+    author: str,
     note_text: str,
     review_source: dict[str, Any],
     context: dict[str, Any],
@@ -68,9 +70,19 @@ def build_review_artifact(
     if not isinstance(review, dict):
         raise ContractError("review input must be a JSON object")
     normalized = dict(review)
+    normalized_author = str(author).strip()
+    reviewer = str(normalized.get("reviewer", "")).strip()
+    review_origin = str(normalized.get("review_origin", "")).strip()
+    normalized["author"] = normalized_author
     failures: list[str] = []
-    if not str(normalized.get("reviewer", "")).strip():
+    if not normalized_author:
+        failures.append("author_missing")
+    if not reviewer:
         failures.append("reviewer_missing")
+    if review_origin not in {"subagent", "human"}:
+        failures.append("review_origin_invalid")
+    if normalized_author and reviewer and normalized_author.casefold() == reviewer.casefold():
+        failures.append("reviewer_matches_author")
     if normalized.get("independent") is not True:
         failures.append("review_not_marked_independent")
     unresolved = normalized.get("unresolved_issues")
@@ -112,6 +124,9 @@ def build_review_artifact(
         failures=failures,
     )
     artifact["note_sha256"] = sha256_text(note_text)
+    artifact["author"] = normalized_author
+    artifact["reviewer"] = reviewer
+    artifact["review_origin"] = review_origin
     artifact["review"] = normalized
     if lint is not None:
         artifact["lint_note_sha256"] = lint.get("note_sha256", "")
@@ -126,6 +141,7 @@ def main() -> None:
     lint = load_json_object(args.lint) if args.lint else None
     artifact = build_review_artifact(
         kind=args.kind,
+        author=args.author,
         note_text=note_text,
         review_source=load_json_object(args.review),
         context=load_json_object(args.context),
