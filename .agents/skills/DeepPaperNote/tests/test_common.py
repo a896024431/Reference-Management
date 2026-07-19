@@ -14,10 +14,14 @@ from common import (
     extract_local_pdf_hints,
     fetch_arxiv_entries,
     infer_source_type,
+    merge_metadata_records,
     normalize_openalex_work,
     normalize_pdf_text_artifacts,
+    normalize_title,
+    paper_id_for_record,
     resolve_reference,
     semantic_scholar_headers,
+    title_resolution,
 )
 
 
@@ -61,6 +65,30 @@ def test_extract_doi_from_url_like_text() -> None:
 def test_extract_arxiv_id_strips_version() -> None:
     text = "https://arxiv.org/abs/2508.09736v4"
     assert extract_arxiv_id(text) == "2508.09736"
+
+
+def test_unicode_titles_and_authors_keep_stable_identity() -> None:
+    assert normalize_title("量子输运：实验") == "量子输运 实验"
+    assert paper_id_for_record({"title": "论文甲"}) != paper_id_for_record({"title": "论文乙"})
+    assert paper_id_for_record({"doi": "https://doi.org/10.1000/ABC"}) == "doi:10.1000/abc"
+    merged = merge_metadata_records({"title": "量子输运", "authors": ["张三", "Élodie"]})
+    assert merged["authors"] == ["张三", "Élodie"]
+
+
+def test_title_resolution_keeps_conflicting_dois_ambiguous() -> None:
+    title = "A Shared Paper"
+    resolution = title_resolution(
+        title,
+        [
+            {"title": title, "year": "2025", "doi": "10.1000/a"},
+            {"title": title, "year": "2025", "doi": "10.1000/b"},
+        ],
+    )
+    assert resolution["status"] == "ambiguous"
+    assert {candidate["doi"] for candidate in resolution["candidates"]} == {
+        "10.1000/a",
+        "10.1000/b",
+    }
 
 
 def test_infer_source_type_for_local_pdf(tmp_path: Path) -> None:

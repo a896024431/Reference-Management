@@ -25,7 +25,7 @@ Research/
     └── images/    # 仅在有可靠图片时存在
 ```
 
-- [论文导航](Research/论文导航.md)：按主题浏览论文。
+- [论文导航](Research/论文导航.md)：进入每篇论文的简洁列表。
 - [论文库](Research/论文库.base)：在 Obsidian Bases 中筛选论文。
 - 每篇论文使用独立目录；没有可靠图片时只保存 `笔记.md`，避免 Git 无法同步空目录。
 
@@ -55,18 +55,6 @@ conda run --no-capture-output -n deeppapernote python <脚本> ...
 
 ## GitHub 同步
 
-只有在用户确认后才执行同步：
-
-```powershell
-git pull --ff-only
-git status --short --ignored
-git add -- AGENTS.md README.md 更新报告.md .gitignore .gitattributes .agents/skills/DeepPaperNote .github/workflows/deeppapernote-v2.yml Research
-git diff --cached --check
-git status --short
-git commit -m "Update DeepPaperNote vault"
-git push
-```
-
-同步前检查暂存内容，确保没有 PDF、Zotero 数据库、本机配置、密钥、Obsidian workspace、缓存或临时文件。
+笔记保存并通过校验后，Codex 会询问是否同步；只有用户确认后才执行。具体同步边界和命令以 `AGENTS.md` 为准，PDF、本机状态、密钥、缓存和临时文件不会进入 Git。
 
 项目维护历史见 [更新报告](更新报告.md)。

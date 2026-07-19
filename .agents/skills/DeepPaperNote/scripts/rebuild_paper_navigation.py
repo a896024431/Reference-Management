@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Regenerate Research/论文导航.md from validated v2 paper topics."""
+"""Regenerate a compact Research/论文导航.md from validated paper notes."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import uuid
-from collections import defaultdict
 from pathlib import Path
 
 from vault import (
@@ -16,6 +15,16 @@ from vault import (
     note_wikilink,
     validate_frontmatter_properties,
 )
+
+
+def _navigation_sort_key(record: NoteRecord) -> tuple[int, str, str]:
+    year = str(record.properties.get("year", "")).strip()
+    numeric_year = int(year) if year.isdigit() else 0
+    return (
+        -numeric_year,
+        str(record.properties.get("title_zh") or record.folder_name).casefold(),
+        str(record.properties.get("title") or record.folder_name).casefold(),
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -30,22 +39,6 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def controlled_topics(record: NoteRecord) -> list[str]:
-    """Return a stable, case-insensitively de-duplicated topic list."""
-    raw_topics = record.properties.get("topics", [])
-    if not isinstance(raw_topics, list):
-        return []
-    topics: list[str] = []
-    seen: set[str] = set()
-    for raw_topic in raw_topics:
-        topic = str(raw_topic).strip()
-        key = topic.casefold()
-        if topic and key not in seen:
-            topics.append(topic)
-            seen.add(key)
-    return topics
-
-
 def render_navigation(vault_root: Path) -> str:
     records = discover_notes(vault_root)
     invalid: list[str] = []
@@ -58,16 +51,7 @@ def render_navigation(vault_root: Path) -> str:
             f"Cannot regenerate navigation until every note has valid v2 properties:\n- {joined}"
         )
 
-    grouped: dict[str, list[NoteRecord]] = defaultdict(list)
-    topic_labels: dict[str, str] = {}
-    for record in records:
-        topics = controlled_topics(record)
-        if not topics:
-            raise ValueError(f"Validated note has no controlled topics: {record.relative_path}")
-        for topic in topics:
-            topic_key = topic.casefold()
-            topic_labels.setdefault(topic_key, topic)
-            grouped[topic_key].append(record)
+    records = sorted(records, key=_navigation_sort_key)
 
     lines = [
         "---",
@@ -81,36 +65,29 @@ def render_navigation(vault_root: Path) -> str:
         "# 论文导航",
         "",
         (
-            "这里是当前 Vault 的论文入口。属性筛选、待补图和待复核状态见核心 Base；"
-            "下方按受控主题生成真实 wikilink，确保每篇论文都可到达。"
+            "这里是当前 Vault 的论文入口。属性、主题和待补图状态可在核心 Base 中筛选；"
+            "下方为每篇论文保留一个直接链接。"
         ),
         "",
         "![[论文库.base]]",
         "",
-        "## 主题索引",
-        "",
-        "同一篇论文可以出现在多个主题下；每个条目都是可解析的真实 wikilink。",
+        "## 论文列表",
         "",
     ]
-    for topic_key in sorted(grouped):
-        topic = topic_labels[topic_key]
-        lines.extend([f"### {topic}", ""])
-        records_in_topic = sorted(
-            grouped[topic_key],
-            key=lambda record: (
-                str(record.properties.get("title_zh") or record.folder_name).casefold(),
-                str(record.properties.get("title") or record.folder_name).casefold(),
-            ),
-        )
-        for record in records_in_topic:
-            lines.append(f"- {note_wikilink(record)}")
-        lines.append("")
+    if records:
+        for record in records:
+            year = str(record.properties.get("year", "")).strip()
+            suffix = f"（{year}）" if year else ""
+            lines.append(f"- {note_wikilink(record)}{suffix}")
+    else:
+        lines.append("- 暂无论文")
+    lines.append("")
     lines.extend(
         [
             "## 使用方式",
             "",
             "- 想按属性筛选时，打开或展开 `论文库.base`。",
-            "- 想浏览研究脉络时，从上面的主题入口进入论文，并结合每篇笔记的“相关论文”继续跳转。",
+            "- 想浏览研究脉络时，从论文列表进入，并结合每篇笔记的“相关论文”继续跳转。",
             "- `note_status`、`evidence_level` 和 `figure_status` 是完成度判断依据。",
             "",
         ]

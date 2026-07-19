@@ -16,7 +16,7 @@ if str(SCRIPTS) not in sys.path:
 from build_synthesis_bundle_v2 import build_bundle
 from contracts_v2 import ContractError, artifact_header, sha256_file, sha256_text
 from lint_note_v2 import build_release_lint
-from publish_note_v2 import validate_note_image_set, validate_release
+from publish_note_v2 import validate_note_image_set, validate_release, validate_synthesis_binding
 from record_note_review_v2 import build_review_artifact
 from validate_note_plan_v2 import build_note_plan_artifact
 
@@ -122,6 +122,29 @@ def local_context_bundle(tmp_path: Path) -> tuple[dict, dict, dict]:
     document.update({"path": str(pdf_path), "url": "", "sha256": sha256_file(pdf_path)})
     evidence["evidence_pack"]["documents"][0] = dict(document)
     return record, evidence, build_bundle(record, evidence)
+
+
+def test_synthesis_binding_rejects_modified_section_texts() -> None:
+    record, evidence, _ = context_bundle()
+    manifest = artifact_header(
+        "figure_manifest", paper_id=record["paper_id"], run_id=record["run_id"]
+    )
+    manifest["assets"] = []
+    decisions = artifact_header(
+        "figure_decisions",
+        paper_id=record["paper_id"],
+        run_id=record["run_id"],
+        status="degraded",
+    )
+    decisions["decisions"] = []
+    context = build_bundle(record, evidence, decisions, manifest)
+    assert validate_synthesis_binding(record, evidence, context, manifest) == (
+        "experimental_physics"
+    )
+    context["section_texts"] = {"results": "fabricated text"}
+
+    with pytest.raises(ContractError, match=r"synthesis_bundle\.section_texts"):
+        validate_synthesis_binding(record, evidence, context, manifest)
 
 
 def note_text() -> str:

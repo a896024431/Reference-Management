@@ -42,6 +42,6 @@
 
 ## 本地与 Git 边界
 
-`.local/`、`.obsidian/`、PDF、Zotero 数据库、密钥、缓存与临时文件不进入 Git。Git 只同步根说明、DeepPaperNote skill、正式 workflow、Research Markdown、Base 和常见图片。
+`.local/`、`.obsidian/`、PDF、Zotero 数据库、密钥、缓存与临时文件不进入 Git。Git 只同步根说明、DeepPaperNote skill、正式 workflow、论文导航、论文笔记、Base 和笔记使用的常见图片。
 
 正常发布事务内部运行导航重建与 Vault lint；独立维护时使用 `rebuild_paper_navigation.py --check` 和 `lint_vault.py`。Vault lint 必须通过属性枚举、目录形状、绝对路径、链接、embed、图片实际解码、孤儿图片、导航覆盖和读者可见流程元数据检查。

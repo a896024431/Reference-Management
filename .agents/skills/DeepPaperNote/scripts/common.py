@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -74,7 +75,10 @@ def strip_tags(text: str) -> str:
 
 
 def normalize_title(text: str) -> str:
-    return re.sub(r"[^a-z0-9\s]", "", normalize_whitespace(text).lower()).strip()
+    normalized = unicodedata.normalize("NFKC", normalize_whitespace(text)).casefold()
+    return normalize_whitespace(
+        "".join(character if character.isalnum() else " " for character in normalized)
+    )
 
 
 LOCAL_PDF_PREFIX_PATTERN = re.compile(r"^(?:[^-]{1,120})\s+-\s+(?:19|20)\d{2}\s+-\s+")
@@ -252,10 +256,12 @@ def infer_source_type(value: str) -> str:
 def paper_id_for_record(record: dict[str, Any]) -> str:
     if record.get("paper_id"):
         return str(record["paper_id"])
-    if record.get("doi"):
-        return f"doi:{str(record['doi']).lower()}"
-    if record.get("arxiv_id"):
-        return f"arxiv:{record['arxiv_id']}"
+    doi = extract_doi(str(record.get("doi", "")))
+    if doi:
+        return f"doi:{doi.casefold()}"
+    arxiv_id = extract_arxiv_id(str(record.get("arxiv_id", "")))
+    if arxiv_id:
+        return f"arxiv:{arxiv_id.casefold()}"
     if record.get("zotero_key"):
         return f"zotero:{record['zotero_key']}"
     if record.get("title"):
@@ -650,6 +656,16 @@ def candidate_identity_keys(record: dict[str, Any]) -> set[str]:
     return keys
 
 
+def _strong_identity_conflict(left: set[str], right: set[str]) -> bool:
+    """Return true when two records carry incompatible DOI or arXiv identifiers."""
+    for prefix in ("doi:", "arxiv:"):
+        left_values = {key for key in left if key.startswith(prefix)}
+        right_values = {key for key in right if key.startswith(prefix)}
+        if left_values and right_values and left_values.isdisjoint(right_values):
+            return True
+    return False
+
+
 def deduplicate_title_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge provider records that share a DOI, arXiv id, or normalized title/year."""
     groups: list[tuple[set[str], list[dict[str, Any]]]] = []
@@ -657,7 +673,11 @@ def deduplicate_title_candidates(candidates: list[dict[str, Any]]) -> list[dict[
         if not isinstance(candidate, dict):
             continue
         keys = candidate_identity_keys(candidate)
-        matching = [index for index, (known, _) in enumerate(groups) if keys and known & keys]
+        matching = [
+            index
+            for index, (known, _) in enumerate(groups)
+            if keys and known & keys and not _strong_identity_conflict(known, keys)
+        ]
         if not matching:
             groups.append((set(keys), [candidate]))
             continue

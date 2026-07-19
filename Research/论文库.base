@@ -50,18 +50,6 @@ views:
       - topics
       - note_status
   - type: table
-    name: 待复核
-    filters:
-      or:
-        - note_status == "draft"
-        - note_status == "reviewed"
-        - note_status == "degraded"
-    order:
-      - title_zh
-      - note_status
-      - evidence_level
-      - figure_status
-  - type: table
     name: 按主题
     groupBy:
       property: topics

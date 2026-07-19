@@ -105,7 +105,6 @@ LOCAL_PDF_LIBRARY_ROOT = "\u6587\u732e"
 BASE_REQUIRED_VIEWS = (
     "\u5168\u90e8\u8bba\u6587",
     "\u5f85\u8865\u56fe",
-    "\u5f85\u590d\u6838",
     "\u6309\u4e3b\u9898",
 )
 BASE_REQUIRED_FILTERS = (

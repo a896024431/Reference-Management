@@ -45,9 +45,10 @@
 - `.gitattributes`
 - `.agents/skills/DeepPaperNote/`
 - `.github/workflows/deeppapernote-v2.yml`
-- `Research/*.base`
-- `Research/**/*.md`
-- `Research/**/images/` 下的常见图片文件
+- `Research/论文导航.md`
+- `Research/论文库.base`
+- `Research/<论文标题>/笔记.md`
+- `Research/<论文标题>/images/` 下的常见图片文件
 
 禁止同步：
 
@@ -64,6 +65,8 @@
 ```powershell
 git pull --ff-only
 git status --short --ignored
+conda run --no-capture-output -n deeppapernote python .agents/skills/DeepPaperNote/scripts/rebuild_paper_navigation.py --vault . --check
+conda run --no-capture-output -n deeppapernote python .agents/skills/DeepPaperNote/scripts/lint_vault.py --vault .
 git add -- AGENTS.md README.md 更新报告.md .gitignore .gitattributes .agents/skills/DeepPaperNote .github/workflows/deeppapernote-v2.yml Research
 git diff --cached --check
 git status --short

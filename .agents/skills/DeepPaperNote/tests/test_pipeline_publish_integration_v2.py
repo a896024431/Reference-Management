@@ -166,6 +166,8 @@ def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
     assert run_manifest["status"] == "fail"
     assert evidence["status"] == "fail"
     assert any(failure.startswith("document_truncated:") for failure in evidence["failures"])
+    assert any("document_truncated:" in failure for failure in run_manifest["failures"])
+    assert "document_truncated:" in truncated.stderr
 
 
 def _make_staging(root: Path, text: str) -> Path:

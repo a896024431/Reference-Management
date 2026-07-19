@@ -72,18 +72,38 @@ def require_pass(path: Path, *, artifact_type: str) -> dict[str, Any]:
     return artifact
 
 
-def run(command: list[str], *, stage: str, log: list[dict[str, Any]]) -> None:
+def run(
+    command: list[str],
+    *,
+    stage: str,
+    log: list[dict[str, Any]],
+    artifact_path: Path | None = None,
+) -> None:
     result = subprocess.run(command, check=False, capture_output=True, text=True)
-    log.append(
-        {
-            "stage": stage,
-            "returncode": result.returncode,
-            "stdout": result.stdout.strip(),
-            "stderr": result.stderr.strip(),
-        }
-    )
+    entry = {
+        "stage": stage,
+        "returncode": result.returncode,
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+    }
+    log.append(entry)
     if result.returncode:
-        raise RuntimeError(f"{stage} failed ({result.returncode}): {result.stderr.strip()}")
+        artifact_failures: list[str] = []
+        if artifact_path is not None and artifact_path.is_file():
+            try:
+                artifact = load_json_object(artifact_path)
+                failures = artifact.get("failures", [])
+                if isinstance(failures, list):
+                    artifact_failures = [
+                        str(failure) for failure in failures if str(failure).strip()
+                    ]
+            except Exception:
+                pass
+        if artifact_failures:
+            entry["artifact_failures"] = artifact_failures
+        detail = "; ".join(artifact_failures)
+        detail = detail or result.stderr.strip() or result.stdout.strip() or "unknown failure"
+        raise RuntimeError(f"{stage} failed ({result.returncode}): {detail}")
 
 
 def write_plan_template(bundle: dict[str, Any], output: Path) -> None:
@@ -146,7 +166,12 @@ def main() -> None:
                 command.extend(["--vault-root", args.vault_root])
             for supplement in args.supplement:
                 command.extend(["--supplement", supplement])
-            run(command, stage="create_paper_record", log=log)
+            run(
+                command,
+                stage="create_paper_record",
+                log=log,
+                artifact_path=paths["paper_record"],
+            )
             require_pass(paths["paper_record"], artifact_type="paper_record")
         else:
             resolved = run_dir / "paper_record.resolved.json"
@@ -166,7 +191,7 @@ def main() -> None:
             ]
             if args.offline:
                 resolve_command.append("--offline")
-            run(resolve_command, stage="resolve_paper", log=log)
+            run(resolve_command, stage="resolve_paper", log=log, artifact_path=resolved)
             metadata_command = [
                 python,
                 str(scripts / "paper_record_v2.py"),
@@ -179,7 +204,12 @@ def main() -> None:
             ]
             if args.offline:
                 metadata_command.append("--offline")
-            run(metadata_command, stage="collect_metadata", log=log)
+            run(
+                metadata_command,
+                stage="collect_metadata",
+                log=log,
+                artifact_path=metadata,
+            )
             fetch_command = [
                 python,
                 str(scripts / "paper_record_v2.py"),
@@ -198,7 +228,12 @@ def main() -> None:
                 fetch_command.extend(["--vault-root", args.vault_root])
             if args.offline:
                 fetch_command.append("--offline")
-            run(fetch_command, stage="fetch_pdf", log=log)
+            run(
+                fetch_command,
+                stage="fetch_pdf",
+                log=log,
+                artifact_path=paths["paper_record"],
+            )
             require_pass(paths["paper_record"], artifact_type="paper_record")
 
         run(
@@ -214,6 +249,7 @@ def main() -> None:
             ],
             stage="extract_evidence",
             log=log,
+            artifact_path=paths["evidence_pack"],
         )
         require_pass(paths["evidence_pack"], artifact_type="evidence_pack")
         run(
@@ -231,6 +267,7 @@ def main() -> None:
             ],
             stage="extract_pdf_assets",
             log=log,
+            artifact_path=paths["pdf_assets"],
         )
         manifest = normalize_figure_manifest(load_json_object(paths["pdf_assets"]))
         emit_json(manifest, paths["figure_manifest"])
@@ -249,6 +286,7 @@ def main() -> None:
             ],
             stage="plan_figures",
             log=log,
+            artifact_path=paths["figure_plan"],
         )
         decisions = normalize_figure_decisions(
             load_json_object(paths["figure_plan"]),
@@ -273,6 +311,7 @@ def main() -> None:
             ],
             stage="build_synthesis_bundle",
             log=log,
+            artifact_path=paths["synthesis_bundle"],
         )
         bundle = load_json_object(paths["synthesis_bundle"])
         write_plan_template(bundle, paths["note_plan_template"])

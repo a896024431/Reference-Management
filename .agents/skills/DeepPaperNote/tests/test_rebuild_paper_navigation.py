@@ -35,7 +35,7 @@ def properties(title: str, title_zh: str, domain: str, topics: list[str]) -> dic
 
 
 class NavigationGenerationTests(unittest.TestCase):
-    def test_groups_by_controlled_topics_with_multi_membership_and_deduplication(self) -> None:
+    def test_lists_each_paper_once_and_keeps_base_embed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             vault = Path(temp)
             papers = (
@@ -63,19 +63,14 @@ class NavigationGenerationTests(unittest.TestCase):
 
             generated = render_navigation(vault)
 
-            self.assertIn("## \u4e3b\u9898\u7d22\u5f15", generated)
-            self.assertEqual(generated.count("### quantum-transport"), 1)
-            self.assertEqual(generated.count("### shared-topic"), 1)
-            self.assertEqual(generated.count("### nanofabrication"), 1)
+            self.assertIn("![[\u8bba\u6587\u5e93.base]]", generated)
+            self.assertIn("## \u8bba\u6587\u5217\u8868", generated)
+            self.assertNotIn("### quantum-transport", generated)
             paper_a_link = f"[[Research/Paper A/{NOTE_FILENAME[:-3]}|\u8bba\u6587\u7532]]"
             paper_b_link = f"[[Research/Paper B/{NOTE_FILENAME[:-3]}|\u8bba\u6587\u4e59]]"
-            self.assertEqual(generated.count(paper_a_link), 2)
-            self.assertEqual(generated.count(paper_b_link), 2)
-            self.assertEqual(generated.count(f"/{NOTE_FILENAME[:-3]}|"), 4)
-            self.assertLess(
-                generated.index("### nanofabrication"),
-                generated.index("### quantum-transport"),
-            )
+            self.assertEqual(generated.count(paper_a_link), 1)
+            self.assertEqual(generated.count(paper_b_link), 1)
+            self.assertEqual(generated.count(f"/{NOTE_FILENAME[:-3]}|"), 2)
 
     def test_refuses_legacy_note_without_v2_properties(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

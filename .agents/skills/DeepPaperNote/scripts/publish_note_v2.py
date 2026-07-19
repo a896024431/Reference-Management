@@ -12,12 +12,12 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+from build_synthesis_bundle_v2 import build_bundle
 from contracts_v2 import (
     ContractError,
     artifact_header,
     canonical_json_sha256,
     emit_json,
-    evidence_units_sha256,
     load_json_object,
     note_plan_bound_evidence_ids,
     require_note_hash,
@@ -273,24 +273,50 @@ def validate_synthesis_binding(
     paper_record: dict[str, Any],
     evidence: dict[str, Any],
     context: dict[str, Any],
+    manifest: dict[str, Any],
 ) -> str:
-    """Rebuild the synthesis fields that determine note and review semantics."""
-    record = paper_record["paper_record"]
-    pack = evidence["evidence_pack"]
-    expected_fields = {
-        "metadata": record["metadata"],
-        "document_index": record["documents"],
-        "paper_type": pack["paper_type"],
-        "evidence_quality": pack["evidence_quality"],
-        "coverage": pack["coverage"],
-        "evidence_units": pack["evidence_units"],
-    }
-    for field, expected in expected_fields.items():
-        if canonical_json_sha256(context.get(field)) != canonical_json_sha256(expected):
-            raise ContractError(f"synthesis_bundle.{field} does not match validated source data")
-    if context.get("title") != record["metadata"].get("title"):
-        raise ContractError("synthesis_bundle.title does not match paper_record metadata.title")
-    return str(pack["paper_type"])
+    """Rebuild and compare every deterministic synthesis field."""
+    raw_decisions = context.get("figure_decisions")
+    decisions: dict[str, Any] = {}
+    if isinstance(raw_decisions, dict) and raw_decisions:
+        decisions = normalize_figure_decisions(
+            raw_decisions,
+            manifest=manifest,
+            require_final=False,
+        )
+        require_v2_artifact(
+            decisions,
+            artifact_type="figure_decisions",
+            allow_statuses={"pass", "degraded"},
+        )
+        if canonical_json_sha256(decisions) != canonical_json_sha256(raw_decisions):
+            raise ContractError(
+                "synthesis_bundle.figure_decisions is not a canonical validated artifact"
+            )
+
+    raw_assets = context.get("pdf_assets")
+    assets: dict[str, Any] = {}
+    if isinstance(raw_assets, dict) and raw_assets:
+        assets = normalize_figure_manifest(raw_assets)
+        require_v2_artifact(
+            assets,
+            artifact_type="figure_manifest",
+            allow_statuses={"pass"},
+        )
+        if canonical_json_sha256(assets) != canonical_json_sha256(manifest):
+            raise ContractError("synthesis_bundle.pdf_assets does not match figure_manifest")
+    elif manifest.get("assets"):
+        raise ContractError("synthesis_bundle.pdf_assets is missing current figure assets")
+
+    expected = build_bundle(paper_record, evidence, decisions, assets)
+    for field in sorted(set(expected) | set(context)):
+        if canonical_json_sha256(context.get(field)) != canonical_json_sha256(
+            expected.get(field)
+        ):
+            raise ContractError(
+                f"synthesis_bundle.{field} does not match validated source data"
+            )
+    return str(evidence["evidence_pack"]["paper_type"])
 
 
 def validate_figure_sources(
@@ -368,12 +394,11 @@ def validate_release(
         paper_record_artifact=paper_record,
         verify_files=True,
     )
+    manifest = normalize_figure_manifest(artifacts["figure_manifest"], verify_files=True)
+    validate_figure_sources(manifest, paper_record)
+    require_v2_artifact(manifest, artifact_type="figure_manifest", allow_statuses={"pass"})
     require_v2_artifact(context, artifact_type="synthesis_bundle", allow_statuses={"pass"})
-    paper_type = validate_synthesis_binding(paper_record, evidence, context)
-    if evidence_units_sha256(context) != evidence_units_sha256(
-        evidence["evidence_pack"]["evidence_units"]
-    ):
-        raise ContractError("synthesis_bundle evidence units do not match evidence_pack")
+    paper_type = validate_synthesis_binding(paper_record, evidence, context, manifest)
     validate_note_plan_artifact(note_plan)
     validate_note_plan_evidence(note_plan, evidence)
     if note_plan["note_plan"]["paper_type"] != paper_type:
@@ -386,8 +411,6 @@ def validate_release(
     if str(quality["author"]).casefold() != str(readability["author"]).casefold():
         raise ContractError("Quality and readability reviews must name the same note author")
 
-    manifest = normalize_figure_manifest(artifacts["figure_manifest"], verify_files=True)
-    validate_figure_sources(manifest, paper_record)
     decisions = normalize_figure_decisions(
         artifacts["figure_decisions"],
         manifest=manifest,

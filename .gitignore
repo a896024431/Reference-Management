@@ -33,15 +33,17 @@
 
 # DeepPaperNote Obsidian outputs.
 !Research/
-!Research/**/
-!Research/**/*.md
-!Research/**/images/
-!Research/**/images/*.png
-!Research/**/images/*.jpg
-!Research/**/images/*.jpeg
-!Research/**/images/*.webp
-!Research/**/images/*.gif
-!Research/**/images/*.svg
+!Research/论文导航.md
+!Research/论文库.base
+!Research/*/
+!Research/*/笔记.md
+!Research/*/images/
+!Research/*/images/*.png
+!Research/*/images/*.jpg
+!Research/*/images/*.jpeg
+!Research/*/images/*.webp
+!Research/*/images/*.gif
+!Research/*/images/*.svg
 
 # Local machine state and private data.
 .local/
@@ -85,4 +87,3 @@ htmlcov/
 !.github/
 !.github/workflows/
 !.github/workflows/deeppapernote-v2.yml
-!Research/*.base

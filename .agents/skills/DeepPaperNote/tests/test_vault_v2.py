@@ -78,8 +78,6 @@ views:
   - type: table
     name: 待补图
   - type: table
-    name: 待复核
-  - type: table
     name: 按主题
 """
 
@@ -165,7 +163,7 @@ class LinkResolutionTests(unittest.TestCase):
 
 
 class BaseDefinitionTests(unittest.TestCase):
-    def test_parses_exact_filters_and_four_official_views(self) -> None:
+    def test_parses_exact_filters_and_three_official_views(self) -> None:
         definition = parse_base_definition(base_text())
         self.assertEqual(
             definition.global_filters,
@@ -176,7 +174,6 @@ class BaseDefinitionTests(unittest.TestCase):
             (
                 "\u5168\u90e8\u8bba\u6587",
                 "\u5f85\u8865\u56fe",
-                "\u5f85\u590d\u6838",
                 "\u6309\u4e3b\u9898",
             ),
         )
@@ -195,7 +192,6 @@ views:
     name: \u5176\u5b83
 # name: \u5168\u90e8\u8bba\u6587
 # name: \u5f85\u8865\u56fe
-# name: \u5f85\u590d\u6838
 # name: \u6309\u4e3b\u9898
 """
             (root / BASE_PATH).write_text(fake_base, encoding="utf-8")
