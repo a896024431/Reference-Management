@@ -25,7 +25,7 @@
 - 不要恢复旧 Zotero 导入脚本、旧静态索引脚本或旧 `note/` 目录工作流。
 - 普通论文生成任务不得修改 `README.md` 或 `更新报告.md`。
 - `README.md` 只保留稳定的用户使用说明，不记录单次更新、统计结果或内部实现细节。
-- 项目维护完成后，只能在 `更新报告.md` 顶部新增一条带日期的记录；不得重写、覆盖或删除历史记录。
+- 只有改变用户操作、数据格式、正式工作流或同步边界的项目维护，才在 `更新报告.md` 顶部新增一条带日期的记录；纯审计、注释或格式调整不记录。不得重写、覆盖或删除历史记录。
 
 ## 本地写入与临时授权
 
@@ -58,15 +58,22 @@
 - Obsidian workspace 状态，如 `.obsidian/`
 - 临时输出、Python/Node 缓存和构建生成文件
 
+## 验证范围
+
+- 只改根目录说明或 `.gitignore`：检查相关内容或忽略规则，并执行 `git diff --check` 和 Git 状态检查。
+- 修改 `Research/` 中的正式输出：执行导航检查、Vault lint、`git diff --check` 和 Git 状态检查。
+- 修改 DeepPaperNote 工作流、脚本或测试：先确认指定 Conda 环境，再顺序执行 Ruff、完整 pytest、导航检查、Vault lint、`git diff --check` 和 Git 状态检查。
+
 ## 用户手动同步
 
-Codex 完成工作后只执行测试、导航检查、Vault lint、`git diff --check` 和 Git 状态检查，不暂存、不提交、不推送。
+Codex 按上述范围完成检查后，不暂存、不提交、不推送。
 
-用户在 Codex 侧边栏中手动执行：
+每次任务按以下顺序执行：
 
-1. 先 Pull／Sync，确认远端没有冲突。
-2. 检查改动并只暂存上述允许同步的文件。
-3. Commit，建议提交信息为 `Update DeepPaperNote vault`。
-4. Push。
+1. 用户先 Pull，使本地仓库与 GitHub 同步。
+2. Codex 修改文件并完成相应检查。
+3. 用户检查改动，只暂存上述允许同步的文件。
+4. Commit，建议提交信息为 `Update DeepPaperNote vault`。
+5. Push。
 
 提交前必须确认没有 PDF、密钥、本机配置或临时文件进入暂存区。

@@ -16,15 +16,9 @@
 !.agents/skills/DeepPaperNote/
 !.agents/skills/DeepPaperNote/**
 
-# Keep optional website/dev output out of the vault if it reappears.
-.agents/skills/DeepPaperNote/site/node_modules/
+# Keep skill-specific output not covered by the global rules below out of the vault.
 .agents/skills/DeepPaperNote/site/.astro/
 .agents/skills/DeepPaperNote/.agent-work/
-.agents/skills/DeepPaperNote/**/__pycache__/
-.agents/skills/DeepPaperNote/**/*.py[cod]
-.agents/skills/DeepPaperNote/.pytest_cache/
-.agents/skills/DeepPaperNote/.mypy_cache/
-.agents/skills/DeepPaperNote/.ruff_cache/
 .agents/skills/DeepPaperNote/.venv/
 .agents/skills/DeepPaperNote/venv/
 .agents/skills/DeepPaperNote/dist/

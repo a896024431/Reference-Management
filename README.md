@@ -4,15 +4,11 @@
 
 ## 如何使用
 
-1. 用 Obsidian 打开本仓库根目录。
-2. 在 Codex 中提供本地 PDF、DOI、arXiv ID、可唯一解析的标题，或 DOI／arXiv／直接 PDF URL。普通出版社文章页不做 HTML 抓取；直接 PDF 必须能从文档元数据或首页确认可靠题名，否则请改给 DOI 或本地 PDF。
-3. 明确要求使用 DeepPaperNote，例如：
+1. 在 Codex 侧边栏先 Pull，使本地仓库与 GitHub 同步。
+2. 用 Obsidian 打开本仓库根目录。
+3. 在 Codex 中提供论文来源并要求生成 Obsidian 深读笔记；Codex 会自动使用仓库内的 DeepPaperNote 工作流。
 
-```text
-请用 DeepPaperNote 给这篇论文生成 Obsidian 深度笔记：<论文来源>
-```
-
-Codex 会读取 `.agents/skills/DeepPaperNote/SKILL.md`，按其中的工作流处理论文并保存结果。
+支持本地 PDF、DOI、arXiv ID、可唯一解析的标题，以及 DOI／arXiv／直接 PDF URL。普通文章页不抓取 HTML；直接 PDF 无法确认可靠题名时，请改给 DOI 或本地 PDF。
 
 ## 保存结果
 
@@ -29,7 +25,7 @@ Research/
 - [论文库](Research/论文库.base)：在 Obsidian Bases 中筛选论文。
 - 每篇论文使用独立目录；没有可靠图片时只保存 `笔记.md`，避免 Git 无法同步空目录。
 
-保存前会执行证据、内容、独立复核和可读性校验。发布时会重新核对本地 PDF、实际页数和图片来源，在同一最终事务中重建论文导航并执行 Vault lint；任一步失败都会恢复旧笔记和导航。全文截断、任一文档 OCR 覆盖不足或关键证据缺失时，流程只报告阻塞，不生成摘要型或降级发布笔记。
+只有全文证据、笔记内容和独立复核都通过校验时才会保存正式笔记；来源不完整或关键证据不足时，流程会停止并说明原因。
 
 ## Zotero（可选）
 
@@ -45,16 +41,18 @@ conda run --no-capture-output -n deeppapernote python -m pip install ".agents/sk
 conda env config vars set -n deeppapernote PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 ```
 
-后续脚本、测试和校验均通过该环境顺序执行：
-
-```powershell
-conda run --no-capture-output -n deeppapernote python <脚本> ...
-```
-
-环境启用 Python UTF-8 mode 后，无需再添加 `-X utf8`；Windows 活动代码页仍为 936 也不影响 Python 的默认文本编码。具体工作流由 `.agents/skills/DeepPaperNote/SKILL.md` 和相关说明文件定义。
+后续脚本、测试和校验均通过该环境顺序执行。具体命令和工作流由 `.agents/skills/DeepPaperNote/SKILL.md` 定义。
 
 ## GitHub 同步
 
-笔记保存并通过校验后，Codex 只提醒同步，不代为暂存、提交或推送。请在 Codex 侧边栏中手动检查改动并依次执行 Pull／Sync、Commit 和 Push。具体同步边界以 `AGENTS.md` 为准，PDF、本机状态、密钥、缓存和临时文件不会进入 Git。
+每次任务使用以下顺序：
+
+1. Pull。
+2. 让 Codex 修改并完成检查。
+3. 检查改动，只暂存 `AGENTS.md` 允许同步的文件。
+4. Commit。
+5. Push。
+
+Codex 不执行暂存、Commit 或 Push。PDF、本机状态、密钥、缓存和临时文件不得进入 Git。
 
 项目维护历史见 [更新报告](更新报告.md)。
