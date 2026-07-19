@@ -42,20 +42,14 @@ jobs:
       - name: Install skill and development dependencies
         run: python -m pip install -e ".[dev]"
 
-      - name: Compile scripts and tests
-        run: python -m compileall -q scripts tests
-
       - name: Check static quality
         run: python -m ruff check scripts tests
 
-      - name: Check every retained CLI
-        run: python -m pytest -q tests -k retained_cli_help
-
-      - name: Run offline pipeline and publish integration tests
-        run: python -m pytest -q tests/test_pipeline_publish_integration_v2.py
-
       - name: Run full test suite
         run: python -m pytest -q tests
+
+      - name: Check deterministic paper navigation
+        run: python scripts/rebuild_paper_navigation.py --vault ../../.. --check
 
       - name: Validate tracked Vault
         run: python scripts/lint_vault.py --vault ../../.. --allow-missing-local-pdfs

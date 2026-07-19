@@ -21,8 +21,13 @@ from contracts_v2 import (
     require_same_identity,
     validate_paper_record_artifact,
 )
-from figure_contracts import build_figure_asset_identity, sha256_bytes
-from figure_contracts_v2 import make_figure_manifest
+from figure_contracts_v2 import (
+    SUPPORTED_IMAGE_EXTENSIONS,
+    build_figure_asset_identity,
+    make_figure_manifest,
+    sha256_bytes,
+    sha256_file,
+)
 
 CAPTION_START_RE = re.compile(
     r"^(?P<label>(?:extended\s+data\s+fig(?:ure)?|supplementary\s+fig(?:ure)?|fig(?:ure)?|table)"
@@ -163,12 +168,18 @@ def extract_page_images_v2(
         image_bytes = extracted.get("image")
         if not image_bytes:
             continue
-        extension = normalize_whitespace(str(extracted.get("ext", "png"))).lower() or "png"
+        extension = (
+            normalize_whitespace(str(extracted.get("ext", "png"))).lower().removeprefix(".")
+            or "png"
+        )
+        if f".{extension}" not in SUPPORTED_IMAGE_EXTENSIONS:
+            continue
         content_hash = sha256_bytes(image_bytes)
+        identity_label = f"xref {xref} image {image_index}"
         asset_id, filename, identity_hash = build_figure_asset_identity(
             document_id=document_id,
             page_number=page_number,
-            label=f"xref {xref} image {image_index}",
+            label=identity_label,
             bbox=[xref, image_index],
             extraction_level="xref",
             content_sha256=content_hash,
@@ -183,7 +194,7 @@ def extract_page_images_v2(
                 "page_number": page_number,
                 "image_index": image_index,
                 "xref": xref,
-                "label": f"xref {xref}",
+                "label": identity_label,
                 "filename": filename,
                 "path": str(output_path),
                 "ext": extension,
@@ -295,6 +306,8 @@ def extract_paper_record_assets(
     figure_dpi: int = core.FIGURE_RENDER_DPI,
 ) -> dict[str, Any]:
     validate_paper_record_artifact(paper_record_artifact)
+    if max_pages < 0:
+        raise ValueError("max_pages must be non-negative")
     if core.fitz is None:
         raise RuntimeError("PyMuPDF (`fitz`) is required")
     paper_id = str(paper_record_artifact["paper_id"])
@@ -307,19 +320,49 @@ def extract_paper_record_assets(
     figure_assets: list[dict[str, Any]] = []
     failures: list[str] = []
     processed_documents: list[dict[str, Any]] = []
+    source_integrity_failed = False
 
     documents = paper_record_artifact["paper_record"].get("documents", [])
     for document in documents:
         document_id = str(document.get("document_id", ""))
         document_role = str(document.get("role", ""))
-        pdf_path = Path(str(document.get("path", ""))).expanduser()
+        pdf_path = Path(str(document.get("path", ""))).expanduser().resolve()
         if not pdf_path.is_file():
             failures.append(f"pdf_asset_document_missing:{document_id}")
+            source_integrity_failed = True
             continue
-        doc = core.fitz.open(pdf_path.resolve())
+        expected_sha256 = str(document.get("sha256", ""))
+        try:
+            before_sha256 = sha256_file(pdf_path)
+        except OSError as exc:
+            failures.append(f"pdf_asset_source_hash_unreadable_before:{document_id}:{exc}")
+            source_integrity_failed = True
+            continue
+        if before_sha256 != expected_sha256:
+            failures.append(f"pdf_asset_source_hash_mismatch_before:{document_id}")
+            source_integrity_failed = True
+            continue
+
+        doc = core.fitz.open(pdf_path)
         document_page_count = 0
         try:
-            page_limit = len(doc) if max_pages <= 0 else min(len(doc), max_pages)
+            actual_pages = len(doc)
+            expected_pages = int(document["pages"])
+            page_limit = actual_pages
+            if actual_pages != expected_pages:
+                failures.append(
+                    "pdf_asset_page_count_mismatch:"
+                    f"{document_id}:expected={expected_pages}:actual={actual_pages}"
+                )
+                source_integrity_failed = True
+                page_limit = 0
+            elif 0 < max_pages < actual_pages:
+                failures.append(
+                    "pdf_asset_document_truncated:"
+                    f"{document_id}:max_pages={max_pages}:total={actual_pages}"
+                )
+                source_integrity_failed = True
+                page_limit = 0
             for index in range(page_limit):
                 page = doc[index]
                 page_number = index + 1
@@ -362,16 +405,28 @@ def extract_paper_record_assets(
             failures.append(f"pdf_asset_extraction_failed:{document_id}:{exc}")
         finally:
             doc.close()
+        try:
+            after_sha256 = sha256_file(pdf_path)
+        except OSError as exc:
+            failures.append(f"pdf_asset_source_hash_unreadable_after:{document_id}:{exc}")
+            source_integrity_failed = True
+            after_sha256 = ""
+        if after_sha256 and (
+            after_sha256 != expected_sha256 or after_sha256 != before_sha256
+        ):
+            failures.append(f"pdf_asset_source_hash_mismatch_after:{document_id}")
+            source_integrity_failed = True
         processed_documents.append(
             {
                 "document_id": document_id,
                 "role": document_role,
-                "source_sha256": str(document.get("sha256", "")),
+                "source_sha256": expected_sha256,
                 "pages_processed": document_page_count,
+                "pages_expected": int(document["pages"]),
             }
         )
 
-    if not processed_documents:
+    if not processed_documents or source_integrity_failed:
         status = "fail"
     elif failures:
         status = "degraded"

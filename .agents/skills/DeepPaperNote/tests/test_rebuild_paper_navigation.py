@@ -4,12 +4,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from rebuild_paper_navigation import render_navigation  # noqa: E402
+import rebuild_paper_navigation  # noqa: E402
+from rebuild_paper_navigation import render_navigation, write_navigation_atomic  # noqa: E402
 from vault import NOTE_FILENAME, render_frontmatter  # noqa: E402
 
 
@@ -83,6 +85,32 @@ class NavigationGenerationTests(unittest.TestCase):
             (paper_dir / NOTE_FILENAME).write_text("# Legacy\n", encoding="utf-8")
             with self.assertRaises(ValueError):
                 render_navigation(vault)
+
+    def test_atomic_write_preserves_previous_file_when_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            vault = Path(temp)
+            target = vault / "Research" / "论文导航.md"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"old\r\ncontent\r\n")
+
+            with patch.object(
+                rebuild_paper_navigation.os,
+                "replace",
+                side_effect=OSError("simulated replacement failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "simulated"):
+                    write_navigation_atomic(vault, "new\ncontent\n")
+
+            self.assertEqual(target.read_bytes(), b"old\r\ncontent\r\n")
+            self.assertEqual(list(target.parent.glob(".论文导航.md.tmp-*")), [])
+
+    def test_atomic_write_uses_lf_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            vault = Path(temp)
+
+            target = write_navigation_atomic(vault, "line one\nline two\n")
+
+            self.assertEqual(target.read_bytes(), b"line one\nline two\n")
 
 
 if __name__ == "__main__":

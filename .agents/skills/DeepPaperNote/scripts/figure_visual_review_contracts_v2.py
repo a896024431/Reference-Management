@@ -3,28 +3,20 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from contracts_v2 import ContractError, artifact_header, require_same_identity, require_v2_artifact
+from contracts_v2 import (
+    ContractError,
+    artifact_header,
+    canonical_json_sha256,
+    require_same_identity,
+    require_v2_artifact,
+)
 from figure_contracts_v2 import normalize_figure_decisions, normalize_figure_manifest
 
 VISUAL_REVIEW_FIELDS = ("complete", "identity", "readable")
 INSERT_OVERRIDE_KEYS = ("decision", "override_decision", "recommended_decision", "outcome")
-
-
-def canonical_json_sha256(value: dict[str, Any]) -> str:
-    """Return a stable digest for one JSON artifact independent of whitespace."""
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
 
 def _quality_status(asset: dict[str, Any]) -> str:
     signals = asset.get("quality_signals")
@@ -185,6 +177,9 @@ def build_figure_visual_review(
         expected_manifest_hash = canonical_json_sha256(canonical_manifest)
         if contact_sheet.get("manifest_sha256") != expected_manifest_hash:
             failures.append("figure_visual_review_contact_sheet_manifest_hash_mismatch")
+        expected_decisions_hash = canonical_json_sha256(canonical_decisions)
+        if contact_sheet.get("decisions_sha256") != expected_decisions_hash:
+            failures.append("figure_visual_review_contact_sheet_decisions_hash_mismatch")
         contact_sheet_hash = canonical_json_sha256(contact_sheet)
 
     artifact = artifact_header(
@@ -264,6 +259,8 @@ def validate_figure_visual_review(
         require_same_identity(artifact, contact_sheet)
         if contact_sheet.get("manifest_sha256") != expected_manifest_hash:
             raise ContractError("Contact-sheet manifest hash mismatch")
+        if contact_sheet.get("decisions_sha256") != expected_decisions_hash:
+            raise ContractError("Contact-sheet decisions hash mismatch")
         if artifact.get("contact_sheet_sha256") != canonical_json_sha256(contact_sheet):
             raise ContractError("Figure visual review contact-sheet hash mismatch")
     return artifact

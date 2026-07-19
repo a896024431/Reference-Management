@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Obsidian Vault v2 helpers for DeepPaperNote.
 
-This module deliberately uses only the Python standard library.  DeepPaperNote
-frontmatter is a small, documented YAML subset (top-level scalars and lists), so
-validation does not need a permissive third-party YAML loader.
+DeepPaperNote frontmatter is a small, documented YAML subset (top-level scalars
+and lists), so validation does not need a permissive third-party YAML loader.
+PyMuPDF is used only to prove that raster assets can actually be decoded.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import unicodedata
@@ -18,7 +17,9 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
-SCHEMA_VERSION = "2.0"
+import fitz
+from contracts_v2 import SCHEMA_VERSION, sha256_file
+
 NOTE_FILENAME = "笔记.md"
 NAVIGATION_PATH = Path("Research") / "论文导航.md"
 BASE_PATH = Path("Research") / "论文库.base"
@@ -94,6 +95,9 @@ ABSOLUTE_PATH_RE = re.compile(
 )
 WIKILINK_RE = re.compile(r"(!?)\[\[([^\]]+)\]\]")
 MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+REFERENCE_IMAGE_RE = re.compile(r"!\[[^\]]*\]\s*\[[^\]]*\]")
+SHORTCUT_IMAGE_RE = re.compile(r"!\[[^\[\]]+\](?!\s*[\[(])")
+HTML_IMAGE_RE = re.compile(r"<img\b", re.IGNORECASE)
 TAG_RE = re.compile(r"^papers(?:/[a-z0-9][a-z0-9-]*)+$")
 YEAR_RE = re.compile(r"^(?:18|19|20|21)\d{2}$")
 LOCAL_PDF_LIBRARY_ROOT = "\u6587\u732e"
@@ -631,6 +635,54 @@ def extract_wikilinks(text: str) -> list[WikiLink]:
     return links
 
 
+def _markdown_image_target(raw: str) -> str:
+    raw = raw.strip()
+    if raw.startswith("<") and ">" in raw:
+        return raw[1 : raw.index(">")].strip()
+    return raw.split(maxsplit=1)[0].strip()
+
+
+def paper_local_image_names(note_text: str) -> tuple[set[str], list[str]]:
+    """Return strict ``images/<basename>`` embeds and reader-image violations."""
+    raw_targets = [
+        target.split("|", 1)[0].strip()
+        for target in re.findall(r"!\[\[([^\]]+)\]\]", note_text)
+    ]
+    raw_targets.extend(
+        _markdown_image_target(target) for target in MARKDOWN_IMAGE_RE.findall(note_text)
+    )
+    names: set[str] = set()
+    failures: list[str] = []
+    if HTML_IMAGE_RE.search(note_text):
+        failures.append("html_image_embed_forbidden")
+    if REFERENCE_IMAGE_RE.search(note_text) or SHORTCUT_IMAGE_RE.search(note_text):
+        failures.append("reference_image_embed_forbidden")
+    for target in raw_targets:
+        normalized = target.strip().strip("<>").replace("\\", "/")
+        if normalized.startswith("//") or re.match(
+            r"^[a-z][a-z0-9+.-]*:", normalized, flags=re.IGNORECASE
+        ):
+            failures.append(f"external_image_forbidden:{target}")
+            continue
+        parts = [part for part in normalized.split("/") if part]
+        suffix = Path(normalized).suffix.lower()
+        looks_local_image = suffix in IMAGE_EXTENSIONS or (
+            parts and parts[0].casefold() == "images"
+        )
+        if not looks_local_image:
+            continue
+        if (
+            len(parts) != 2
+            or parts[0] != "images"
+            or parts[1] in {".", ".."}
+            or suffix not in IMAGE_EXTENSIONS
+        ):
+            failures.append(f"image_reference_unsafe:{target}")
+            continue
+        names.add(parts[1])
+    return names, failures
+
+
 def is_local_pdf_library_link(link: WikiLink) -> bool:
     """Return whether a non-embedded link targets the local-only PDF library."""
     if link.embedded:
@@ -732,16 +784,8 @@ def note_wikilink(record: NoteRecord, display: str | None = None) -> str:
     return f"[[{target}|{label}]]"
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def validate_image_file(path: Path) -> str:
-    """Return an empty string when an image has a recognizable complete container."""
+    """Return an empty string only when an image is structurally usable."""
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -749,27 +793,23 @@ def validate_image_file(path: Path) -> str:
     suffix = path.suffix.lower()
     if not data:
         return "empty"
-    if suffix == ".png":
-        if not data.startswith(b"\x89PNG\r\n\x1a\n") or b"IEND" not in data[-32:]:
-            return "invalid_png_container"
-    elif suffix in {".jpg", ".jpeg"}:
-        if not data.startswith(b"\xff\xd8") or not data.rstrip().endswith(b"\xff\xd9"):
-            return "invalid_jpeg_container"
-    elif suffix == ".gif":
-        if not data.startswith((b"GIF87a", b"GIF89a")) or not data.rstrip().endswith(b";"):
-            return "invalid_gif_container"
-    elif suffix == ".webp":
-        if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
-            return "invalid_webp_container"
-    elif suffix == ".svg":
+    if suffix == ".svg":
         try:
             root = ET.fromstring(data.decode("utf-8-sig"))
         except (UnicodeDecodeError, ET.ParseError):
             return "invalid_svg_xml"
         if root.tag.rsplit("}", 1)[-1].lower() != "svg":
             return "invalid_svg_root"
-    else:
+        return ""
+    if suffix not in IMAGE_EXTENSIONS:
         return "unsupported_image_extension"
+
+    try:
+        pixmap = fitz.Pixmap(str(path))
+        if pixmap.width <= 0 or pixmap.height <= 0 or pixmap.n <= 0:
+            return "invalid_raster_dimensions"
+    except Exception as exc:
+        return f"raster_decode_failed:{exc.__class__.__name__}"
     return ""
 
 
@@ -919,6 +959,116 @@ def _validate_base_file(path: Path, vault_root: Path, issues: list[VaultIssue]) 
         )
 
 
+def _paper_directory_images(
+    paper_dir: Path,
+    vault_root: Path,
+    issues: list[VaultIssue],
+) -> list[Path]:
+    """Validate one permanent paper directory and return supported image files."""
+    paper_relative = paper_dir.relative_to(vault_root).as_posix()
+    image_files: list[Path] = []
+    for entry in sorted(paper_dir.iterdir(), key=lambda item: item.name.casefold()):
+        if entry.name == NOTE_FILENAME:
+            if not entry.is_file():
+                _issue(
+                    issues,
+                    "note_not_file",
+                    f"{paper_relative}/{NOTE_FILENAME}",
+                    f"{NOTE_FILENAME} must be a regular file",
+                )
+            continue
+        if entry.name != "images":
+            _issue(
+                issues,
+                "paper_directory_extra_entry",
+                paper_relative,
+                "Paper directories may contain only the note and an optional images/ directory",
+                entry=entry.name,
+            )
+            continue
+        if not entry.is_dir():
+            _issue(
+                issues,
+                "images_not_directory",
+                f"{paper_relative}/images",
+                "Paper-local images must be a directory when present",
+            )
+            continue
+        for image in sorted(entry.iterdir(), key=lambda item: item.name.casefold()):
+            relative = image.relative_to(vault_root).as_posix()
+            if not image.is_file():
+                _issue(
+                    issues,
+                    "images_extra_entry",
+                    relative,
+                    "images/ may contain only supported image files",
+                )
+            elif image.suffix.lower() not in IMAGE_EXTENSIONS:
+                _issue(
+                    issues,
+                    "image_extension_unsupported",
+                    relative,
+                    "images/ contains an unsupported file type",
+                )
+            else:
+                image_files.append(image)
+    return image_files
+
+
+def _validate_research_structure(
+    vault_root: Path,
+    issues: list[VaultIssue],
+) -> list[Path]:
+    research = vault_root / "Research"
+    if not research.is_dir():
+        _issue(issues, "research_directory_missing", "Research", "Research/ is required")
+        return []
+    image_files: list[Path] = []
+    for entry in sorted(research.iterdir(), key=lambda item: item.name.casefold()):
+        relative = entry.relative_to(vault_root).as_posix()
+        if entry.is_file():
+            if entry.name == NAVIGATION_PATH.name or entry.suffix.casefold() == ".base":
+                continue
+            _issue(
+                issues,
+                "research_root_extra_entry",
+                relative,
+                "Research/ root may contain only navigation, Base files, and paper directories",
+            )
+            continue
+        if not entry.is_dir():
+            _issue(
+                issues,
+                "research_root_extra_entry",
+                relative,
+                "Research/ contains an unsupported filesystem entry",
+            )
+            continue
+        if entry.name.startswith("."):
+            _issue(
+                issues,
+                "research_temporary_directory",
+                relative,
+                "Temporary publish directories must not remain in Research/",
+            )
+        if not (entry / NOTE_FILENAME).is_file():
+            _issue(
+                issues,
+                "paper_directory_note_missing",
+                relative,
+                f"Every Research paper directory must contain {NOTE_FILENAME}",
+            )
+        image_files.extend(_paper_directory_images(entry, vault_root, issues))
+    return image_files
+
+
+def _reader_visible_figure_issues(text: str) -> list[dict[str, object]]:
+    """Reuse the note publication-hygiene gate without creating an import cycle."""
+    from lint_note_v2 import reader_visible_figure_metadata_issues
+
+    return reader_visible_figure_metadata_issues(text)
+
+
 def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> dict[str, Any]:
     vault_root = vault_root.expanduser().resolve()
     records = discover_notes(vault_root)
@@ -926,6 +1076,7 @@ def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> d
     issues: list[VaultIssue] = []
     referenced_images: set[str] = set()
     note_paths = {record.relative_path.casefold() for record in records}
+    all_images = _validate_research_structure(vault_root, issues)
 
     for record in records:
         for parse_error in record.parse_errors:
@@ -957,14 +1108,6 @@ def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> d
                 record.relative_path,
                 "The note must contain one H1 title",
             )
-        if not (record.path.parent / "images").is_dir():
-            _issue(
-                issues,
-                "images_directory_missing",
-                record.relative_path,
-                "Paper-local images/ directory is required",
-            )
-
         complete_text = render_unvalidated_frontmatter(record.properties) + record.body
         absolute_match = ABSOLUTE_PATH_RE.search(complete_text)
         if absolute_match:
@@ -996,6 +1139,29 @@ def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> d
                     f"Permanent note references temporary output: {path_part}",
                     match=path_part,
                 )
+
+        for metadata_issue in _reader_visible_figure_issues(
+            record.path.read_text(encoding="utf-8-sig")
+        ):
+            _issue(
+                issues,
+                str(metadata_issue["code"]),
+                record.relative_path,
+                "Reader-visible figure workflow metadata must stay in local run artifacts",
+                line=metadata_issue.get("line"),
+                excerpt=metadata_issue.get("excerpt", ""),
+            )
+
+        _, image_reference_failures = paper_local_image_names(record.body)
+        for failure in image_reference_failures:
+            code = failure.split(":", 1)[0]
+            _issue(
+                issues,
+                code,
+                record.relative_path,
+                "Paper notes may embed only reviewed paper-local images",
+                detail=failure,
+            )
 
         _collect_document_links(
             record.body,
@@ -1052,19 +1218,7 @@ def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> d
 
     _validate_base_file(vault_root / BASE_PATH, vault_root, issues)
 
-    all_images: list[Path] = []
-    research_root = vault_root / "Research"
-    if research_root.exists():
-        all_images = sorted(
-            (
-                path
-                for path in research_root.rglob("*")
-                if path.is_file()
-                and path.suffix.lower() in IMAGE_EXTENSIONS
-                and "images" in path.parts
-            ),
-            key=lambda item: item.as_posix().casefold(),
-        )
+    all_images.sort(key=lambda item: item.as_posix().casefold())
     for image in all_images:
         relative = image.relative_to(vault_root).as_posix()
         corruption = validate_image_file(image)

@@ -22,7 +22,7 @@
 
 任一文档解析失败、页数变化、实际截断、OCR 覆盖低于 60%、无页面或论文类型所需证据缺失时，evidence 状态为 `fail`，处理流程以非零状态退出。确定性阶段通过只表示 synthesis bundle 已就绪。
 
-正常参数为 `--input` 或 `--input-record`，以及可选 `--run-id`、`--workdir`、`--vault-root`、可重复 `--supplement`、`--offline`、`--max-pages`；0 表示全文。
+正常参数为 `--input` 或 `--input-record`，以及可选 `--run-id`、`--workdir`、`--vault-root`、可重复 `--supplement`、`--offline`、`--max-pages`；0 表示全文。`--run-id` 只能是小写、非 Windows 保留名的安全目录名；`--offline` 只允许本地 PDF 或可信本地 input record，禁止所有元数据查询和 URL 下载。直接 PDF URL 下载后必须从文档元数据或首页确认题名，不能把 `download.pdf` 一类文件名当论文身份。
 
 ## 模型与复核阶段
 
@@ -51,23 +51,26 @@
 5. 独立完成可读性审阅，再以 `--kind readability --author <作者> --lint <报告>` 记录。
 6. 构建 contact sheet 并记录视觉复核。
 
-审阅 JSON 必须给出 `reviewer`、`review_origin: subagent|human`、`independent: true`、分数和空的 `unresolved_issues`。作者与审阅者相同、低于 4/5、存在遗留问题，或笔记已修改而复核不再对应当前版本，都会失败。
+审阅 JSON 必须给出 `reviewer`、`review_origin: subagent|human`、`independent: true`、分数和空的 `unresolved_issues`。作者与审阅者相同、低于 4/5、质量复核未覆盖至少三条不同结论、存在遗留问题，或笔记、完整 synthesis、evidence、passing lint 已修改而复核不再对应当前版本，都会失败。
 
 ## 发布阶段
 
-`publish_note_v2.py` 只接受状态为 `pass` 的 paper/evidence/note-plan/lint/review/figure 处理结果以及 `note_status: polished` 的笔记。它还会：
+`publish_note_v2.py` 只接受状态为 `pass` 且 failures 为空的 paper/evidence/synthesis/note-plan/lint/review/figure 处理结果以及 `note_status: polished` 的笔记。它还会：
 
+- 重新核验逐文档 evidence coverage、论文类型所需证据、evidence ID、本地 PDF 的读取前后 SHA-256 与实际页数，以及复核记录与当前完整 synthesis/evidence/lint 的内容绑定。
 - 从主文/补充材料推导 `evidence_level: full_text|full_text_supplement`。
 - 从 decisions 推导 `figure_status`：无决策为 `none_needed`；只有 placeholder 为 `placeholder_only`；placeholder 与 inserted 并存为 `partial`；无 placeholder 为 `complete`。
 - 拒绝待发布目录顶层的额外文件，以及 `images/` 中的目录或非图片文件。
-- 验证图片来源、能否正常打开、内容指纹、embed 与是否被笔记引用。
-- 安全替换 `Research/<标题>/`：只有新目录准备完整后才切换，失败时恢复旧目录。
-- 同样安全更新 `.local/deeppapernote/published/<run_id>/` 本地处理记录；新记录写入失败时保留旧记录。
+- 验证图片的 document/page/稳定身份、实际解码、内容指纹，并要求正文图片恰好等于已插入且通过视觉复核的本地图片集合；拒绝远程、data URI 与 HTML 图片。
+- 安全替换 `Research/<标题>/`：只有新目录准备完整后才切换；同名目录必须由 DOI/arXiv 或 authors+year 证明是同一论文，失败时恢复旧目录。
+- 原子重建导航并执行严格 Vault lint；失败时恢复旧笔记和导航。
+- 最终检查通过后才安全更新 `.local/deeppapernote/published/<run_id>/`；新记录写入失败时恢复旧版本。
+- 写出带导航指纹和 Vault lint 摘要的最终完成凭证；清理遗留 backup 失败只记录警告，不把已完成发布误报为失败。
 
-随后运行导航重建与 Vault lint。
+独立维护时可另外运行导航 `--check` 与 Vault lint，但它们不再是正常发布后依赖人工补跑的步骤。
 
 ## 失败策略与结果文件
 
 正式流程没有 `--allow-degraded`、`abstract_only` 或 workspace fallback。证据不完整时只报告阻塞与可补充来源，不生成可发布笔记。
 
-`paper_record.json` 保存元数据和 documents；`evidence_pack.json` 保存全文证据、覆盖率、页码与稳定 evidence ID；figure manifest/decisions 保存候选和最终决定；lint 与两类文字复核都记录所检查笔记的内容指纹；发布版本记录另保存笔记文件和图片的字节级内容指纹。
+`paper_record.json` 保存元数据和 documents；`evidence_pack.json` 保存全文证据、覆盖率、页码与稳定 evidence ID；figure manifest/decisions 保存候选和最终决定；lint 与两类文字复核都记录所检查笔记和证据内容指纹；发布版本记录保存 LF 规范化笔记和图片的字节级内容指纹，以及导航与 Vault lint 的完成状态。

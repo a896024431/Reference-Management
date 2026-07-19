@@ -9,11 +9,14 @@ from pathlib import Path
 import fitz
 import publish_note_v2
 import pytest
-from contracts_v2 import artifact_header, load_json_object, sha256_text
+from contracts_v2 import ContractError, artifact_header, load_json_object, sha256_text
 from publish_note_v2 import (
-    _rollback_after_audit_failure,
+    _rollback_release_state,
     archive_publish_audit,
     publish_transaction,
+    validate_existing_audit_identity,
+    validate_operational_paths,
+    validate_published_target,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -127,6 +130,10 @@ def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
         "run_manifest.json",
     ):
         assert load_json_object(passed_dir / name)["status"] == "pass"
+    run_manifest = load_json_object(passed_dir / "run_manifest.json")
+    assert run_manifest["downstream_pending"][-1] == "publish_note_v2"
+    assert "rebuild_paper_navigation" not in run_manifest["downstream_pending"]
+    assert "lint_vault" not in run_manifest["downstream_pending"]
     template = load_json_object(passed_dir / "note_plan.template.json")["note_plan"]
     assert {
         "evidence_ids",
@@ -164,7 +171,7 @@ def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
 def _make_staging(root: Path, text: str) -> Path:
     staging = root / "staging"
     (staging / "images").mkdir(parents=True)
-    (staging / "笔记.md").write_text(text, encoding="utf-8")
+    (staging / "笔记.md").write_bytes(text.encode("utf-8"))
     return staging
 
 
@@ -181,9 +188,20 @@ def test_publish_transaction_can_be_rolled_back_after_audit_failure(
     vault = tmp_path / "vault"
     vault.mkdir()
     folder = "Atomic Test Paper"
-    staging = _make_staging(tmp_path, "new note")
-    _make_existing_target(vault, folder, "old note")
-    release = {"folder_name": folder}
+    staging = _make_staging(tmp_path, "new\r\nnote\r\n")
+    old_note = (
+        '---\ntitle: "Atomic Test Paper"\nauthors:\n  - A. Author\n'
+        'year: 2025\n---\nold note'
+    )
+    _make_existing_target(vault, folder, old_note)
+    navigation = vault / "Research" / "论文导航.md"
+    navigation.write_bytes(b"old navigation\r\n")
+    release = {
+        "folder_name": folder,
+        "title": "Atomic Test Paper",
+        "authors": ["a. author"],
+        "year": "2025",
+    }
     backup_root = tmp_path / "rollback"
 
     target, backup = publish_transaction(
@@ -193,10 +211,208 @@ def test_publish_transaction_can_be_rolled_back_after_audit_failure(
         release=release,
     )
 
-    assert (target / "笔记.md").read_text(encoding="utf-8") == "new note"
+    assert (target / "笔记.md").read_bytes() == b"new\nnote\n"
+    assert not (target / "images").exists()
     assert backup is not None
-    _rollback_after_audit_failure(target=target, backup=backup, vault=vault)
-    assert (target / "笔记.md").read_text(encoding="utf-8") == "old note"
+    navigation.write_bytes(b"new navigation\n")
+    _rollback_release_state(
+        target=target,
+        backup=backup,
+        vault=vault,
+        previous_navigation=b"old navigation\r\n",
+    )
+    assert (target / "笔记.md").read_text(encoding="utf-8") == old_note
+    assert navigation.read_bytes() == b"old navigation\r\n"
+
+
+def test_publish_transaction_refuses_sanitized_title_collision(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    folder = "A B"
+    staging = _make_staging(tmp_path, "new note\n")
+    existing_note = '---\ntitle: "A:B"\n---\nexisting note'
+    target = _make_existing_target(vault, folder, existing_note)
+
+    with pytest.raises(ContractError, match="collides with an existing paper directory"):
+        publish_transaction(
+            staging_dir=staging,
+            vault=vault,
+            backup_root=tmp_path / "rollback",
+            release={"folder_name": folder, "title": "A?B"},
+        )
+
+    assert (target / "笔记.md").read_text(encoding="utf-8") == existing_note
+    assert (staging / "笔记.md").is_file()
+
+
+def test_publish_transaction_refuses_same_title_with_different_doi(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    folder = "Shared Paper Title"
+    staging = _make_staging(tmp_path, "new note\n")
+    existing_note = (
+        '---\ntitle: "Shared Paper Title"\ndoi: "10.1000/existing"\n---\nexisting note'
+    )
+    target = _make_existing_target(vault, folder, existing_note)
+
+    with pytest.raises(ContractError, match="collides with an existing paper directory"):
+        publish_transaction(
+            staging_dir=staging,
+            vault=vault,
+            backup_root=tmp_path / "rollback",
+            release={
+                "folder_name": folder,
+                "title": "Shared Paper Title",
+                "doi": "https://doi.org/10.1000/incoming",
+            },
+        )
+
+    assert (target / "笔记.md").read_text(encoding="utf-8") == existing_note
+
+
+def test_publish_transaction_refuses_unidentified_same_title_with_different_authors(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    folder = "Unidentified Shared Title"
+    staging = _make_staging(tmp_path, "new note\n")
+    existing_note = (
+        '---\ntitle: "Unidentified Shared Title"\nauthors:\n  - Existing Author\n'
+        'year: 2025\n---\nexisting note'
+    )
+    target = _make_existing_target(vault, folder, existing_note)
+
+    with pytest.raises(ContractError, match="collides with an existing paper directory"):
+        publish_transaction(
+            staging_dir=staging,
+            vault=vault,
+            backup_root=tmp_path / "rollback",
+            release={
+                "folder_name": folder,
+                "title": "Unidentified Shared Title",
+                "authors": ["Different Author"],
+                "year": "2025",
+            },
+        )
+
+    assert (target / "笔记.md").read_text(encoding="utf-8") == existing_note
+
+
+def test_prepare_failure_removes_partial_publish_directory(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    staging = _make_staging(tmp_path, "new note\n")
+    (staging / "images" / "candidate.png").write_bytes(b"candidate")
+    monkeypatch.setattr(
+        publish_note_v2.shutil,
+        "copytree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("copy failed")),
+    )
+
+    with pytest.raises(OSError, match="copy failed"):
+        publish_transaction(
+            staging_dir=staging,
+            vault=vault,
+            backup_root=tmp_path / "rollback",
+            release={"folder_name": "Prepare Failure", "title": "Prepare Failure"},
+        )
+
+    research = vault / "Research"
+    assert research.is_dir()
+    assert list(research.iterdir()) == []
+
+
+def test_post_commit_validation_rechecks_note_and_image_hashes(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "笔记.md").write_text("actual note\n", encoding="utf-8", newline="\n")
+    with pytest.raises(ContractError, match="Published note hash differs"):
+        validate_published_target(
+            target,
+            {
+                "note_sha256": sha256_text("different note\n"),
+                "image_names": [],
+                "materialized": [],
+            },
+        )
+
+    note = "![[images/fig.png]]\n"
+    (target / "笔记.md").write_text(note, encoding="utf-8", newline="\n")
+    image_dir = target / "images"
+    image_dir.mkdir()
+    image_dir.joinpath("fig.png").write_bytes(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c"
+            "020000000b4944415478da6364f80f00010501012718e3660000000049454e44"
+            "ae426082"
+        )
+    )
+    with pytest.raises(ContractError, match="Published image hash mismatch"):
+        validate_published_target(
+            target,
+            {
+                "note_sha256": sha256_text(note),
+                "image_names": ["fig.png"],
+                "materialized": [{"filename": "fig.png", "file_sha256": "0" * 64}],
+            },
+        )
+
+
+def test_operational_paths_cannot_write_reader_facing_vault_content(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    (vault / "Research").mkdir(parents=True)
+    with pytest.raises(ContractError, match="backup_root"):
+        validate_operational_paths(
+            vault=vault,
+            backup_root=vault / "Research" / "rollback",
+            output=None,
+        )
+    with pytest.raises(ContractError, match="must stay under .local"):
+        validate_operational_paths(
+            vault=vault,
+            backup_root=vault / ".local" / "rollback",
+            output=vault / "Research" / "论文导航.md",
+        )
+    validate_operational_paths(
+        vault=vault,
+        backup_root=vault / ".local" / "rollback",
+        output=vault / ".local" / "reports" / "publish.json",
+    )
+    with pytest.raises(ContractError, match="must not overwrite any publish audit"):
+        validate_operational_paths(
+            vault=vault,
+            backup_root=vault / ".local" / "rollback",
+            output=(
+                vault
+                / ".local"
+                / "deeppapernote"
+                / "published"
+                / "another-run"
+                / "snapshot.json"
+            ),
+        )
+
+
+def test_existing_audit_run_id_cannot_be_reused_for_another_paper(tmp_path: Path) -> None:
+    audit = tmp_path / "published" / "run-reused"
+    audit.mkdir(parents=True)
+    (audit / "snapshot.json").write_text(
+        json.dumps(
+            artifact_header(
+                "published_audit",
+                paper_id="paper:existing",
+                run_id="run-reused",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContractError, match="collides with an existing publish audit"):
+        validate_existing_audit_identity(
+            audit,
+            {"paper_id": "paper:incoming", "run_id": "run-reused"},
+        )
 
 
 def test_archive_publish_audit_is_atomic_and_preserves_previous_on_failure(
@@ -226,6 +442,8 @@ def test_archive_publish_audit_is_atomic_and_preserves_previous_on_failure(
         paper_id=release["paper_id"],
         run_id=run_id,
     )
+    report["navigation_sha256"] = "1" * 64
+    report["vault_lint_summary"] = {"errors": 0, "warnings": 0}
 
     audit = archive_publish_audit(
         vault=vault,
@@ -268,13 +486,60 @@ def test_archive_publish_audit_is_atomic_and_preserves_previous_on_failure(
     assert (audit / "snapshot.json").read_bytes() == original_snapshot
 
 
+def test_old_audit_cleanup_failure_is_only_a_warning(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    folder = "Audit Cleanup Test Paper"
+    target = _make_existing_target(vault, folder, "published note")
+    run_id = "audit-cleanup-test"
+    release = {
+        "paper_id": "paper:audit-cleanup",
+        "run_id": run_id,
+        "folder_name": folder,
+        "note_sha256": sha256_text("published note"),
+    }
+    artifacts = {
+        "paper_record": artifact_header(
+            "paper_record", paper_id=release["paper_id"], run_id=run_id
+        )
+    }
+    report = artifact_header(
+        "publish_report", paper_id=release["paper_id"], run_id=run_id
+    )
+    report["navigation_sha256"] = "2" * 64
+    report["vault_lint_summary"] = {"errors": 0, "warnings": 0}
+    kwargs = {
+        "vault": vault,
+        "target": target,
+        "artifacts": artifacts,
+        "contact_sheet": {"kind": "contact-sheet"},
+        "visual_review": {"kind": "visual-review"},
+        "release": release,
+        "report": report,
+    }
+    audit = archive_publish_audit(**kwargs)
+    original_remove = publish_note_v2._safe_remove_tree
+
+    def fail_old_cleanup(path: Path, *, allowed_root: Path) -> None:
+        if ".audit-old-" in path.name:
+            raise OSError("simulated old audit cleanup failure")
+        original_remove(path, allowed_root=allowed_root)
+
+    monkeypatch.setattr(publish_note_v2, "_safe_remove_tree", fail_old_cleanup)
+
+    with pytest.warns(RuntimeWarning, match="old audit backup"):
+        replaced = archive_publish_audit(**kwargs)
+
+    assert replaced == audit
+    assert audit.is_dir()
+
+
 @pytest.mark.parametrize(
     "script_name",
     [
         "build_figure_contact_sheet_v2.py",
         "build_synthesis_bundle_v2.py",
         "create_input_record.py",
-        "create_paper_record_v2.py",
         "extract_evidence_v2.py",
         "extract_pdf_assets_v2.py",
         "lint_note_v2.py",

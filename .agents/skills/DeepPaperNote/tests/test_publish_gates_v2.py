@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import sys
 from pathlib import Path
 
+import fitz
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -12,9 +14,9 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from build_synthesis_bundle_v2 import build_bundle
-from contracts_v2 import ContractError, artifact_header, sha256_text
+from contracts_v2 import ContractError, artifact_header, sha256_file, sha256_text
 from lint_note_v2 import build_release_lint
-from publish_note_v2 import validate_release
+from publish_note_v2 import validate_note_image_set, validate_release
 from record_note_review_v2 import build_review_artifact
 from validate_note_plan_v2 import build_note_plan_artifact
 
@@ -43,17 +45,82 @@ def context_bundle() -> tuple[dict, dict, dict]:
     evidence = artifact_header(
         "evidence_pack", paper_id=record["paper_id"], run_id=record["run_id"]
     )
+    document = dict(record["paper_record"]["documents"][0])
+    units = [
+        {
+            "evidence_id": "ev:1",
+            "document_id": "doc:main",
+            "document_role": "main",
+            "page": 1,
+            "section": "introduction",
+            "types": ["problem"],
+            "text": "problem",
+        },
+        {
+            "evidence_id": "ev:2",
+            "document_id": "doc:main",
+            "document_role": "main",
+            "page": 2,
+            "section": "method",
+            "types": ["protocol"],
+            "text": "protocol",
+        },
+        {
+            "evidence_id": "ev:3",
+            "document_id": "doc:main",
+            "document_role": "main",
+            "page": 3,
+            "section": "results",
+            "types": ["results"],
+            "text": "results",
+        },
+    ]
     evidence["evidence_pack"] = {
+        "paper_id": record["paper_id"],
         "paper_type": "experimental_physics",
         "paper_type_rationale": "measurement signals",
         "evidence_quality": "high",
-        "coverage": {"missing": [], "ratio": 1.0},
-        "evidence_units": [
-            {"evidence_id": "ev:1", "types": ["problem"], "text": "problem"},
-            {"evidence_id": "ev:2", "types": ["protocol"], "text": "protocol"},
-            {"evidence_id": "ev:3", "types": ["results"], "text": "results"},
+        "documents": [document],
+        "coverage": {
+            "required": ["problem", "protocol", "results"],
+            "available": ["problem", "protocol", "results"],
+            "missing": [],
+            "ratio": 1.0,
+            "text_pages": 3,
+            "total_pages": 3,
+            "needs_ocr": False,
+        },
+        "evidence_units": units,
+        "page_records": [
+            {
+                "document_id": "doc:main",
+                "document_role": "main",
+                "page": page,
+                "text_chars": 100,
+            }
+            for page in range(1, 4)
         ],
+        "extraction_failures": [],
     }
+    return record, evidence, build_bundle(record, evidence)
+
+
+def local_context_bundle(tmp_path: Path) -> tuple[dict, dict, dict]:
+    record, evidence, _ = context_bundle()
+    source_dir = tmp_path.parent / f"{tmp_path.name}-source"
+    source_dir.mkdir()
+    pdf_path = source_dir / "paper.pdf"
+    pdf = fitz.open()
+    try:
+        for page_number in range(1, 4):
+            page = pdf.new_page()
+            page.insert_text((72, 72), f"Evidence page {page_number}")
+        pdf.save(pdf_path)
+    finally:
+        pdf.close()
+    document = record["paper_record"]["documents"][0]
+    document.update({"path": str(pdf_path), "url": "", "sha256": sha256_file(pdf_path)})
+    evidence["evidence_pack"]["documents"][0] = dict(document)
     return record, evidence, build_bundle(record, evidence)
 
 
@@ -213,7 +280,7 @@ def test_hash_bound_lint_quality_and_readability_gates() -> None:
 
 
 def test_strict_release_accepts_explicit_final_placeholder(tmp_path: Path) -> None:
-    record, evidence, context = context_bundle()
+    record, evidence, context = local_context_bundle(tmp_path)
     note = note_text()
     lint = build_release_lint(note, context)
     plan = build_note_plan_artifact(
@@ -286,6 +353,7 @@ def test_strict_release_accepts_explicit_final_placeholder(tmp_path: Path) -> No
         artifacts={
             "paper_record": record,
             "evidence_pack": evidence,
+            "synthesis_bundle": context,
             "note_plan": plan,
             "lint_report": lint,
             "quality_review": quality,
@@ -295,6 +363,76 @@ def test_strict_release_accepts_explicit_final_placeholder(tmp_path: Path) -> No
         },
     )
     assert release["note_sha256"] == lint["note_sha256"]
+
+    plan["note_plan"]["paper_type"] = "generic"
+    with pytest.raises(ContractError, match="note_plan.paper_type must match"):
+        validate_release(
+            staging_dir=tmp_path,
+            artifacts={
+                "paper_record": record,
+                "evidence_pack": evidence,
+                "synthesis_bundle": context,
+                "note_plan": plan,
+                "lint_report": lint,
+                "quality_review": quality,
+                "readability_review": readability,
+                "figure_manifest": manifest,
+                "figure_decisions": decisions,
+            },
+        )
+    plan["note_plan"]["paper_type"] = "experimental_physics"
+
+    plan["note_plan"]["figure_intents"] = [
+        {"target_id": "Fig. 2", "evidence_ids": ["ev:3"]}
+    ]
+    with pytest.raises(ContractError, match="lack final decisions"):
+        validate_release(
+            staging_dir=tmp_path,
+            artifacts={
+                "paper_record": record,
+                "evidence_pack": evidence,
+                "synthesis_bundle": context,
+                "note_plan": plan,
+                "lint_report": lint,
+                "quality_review": quality,
+                "readability_review": readability,
+                "figure_manifest": manifest,
+                "figure_decisions": decisions,
+            },
+        )
+
+
+def test_local_image_references_and_files_must_match_exactly(tmp_path: Path) -> None:
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    note = "![[images/fig-1.png]]\n"
+
+    with pytest.raises(ContractError, match="image_missing:fig-1.png"):
+        validate_note_image_set(note, image_dir, label="Test")
+
+    image_dir.joinpath("fig-1.png").write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+    )
+    assert validate_note_image_set(note, image_dir, label="Test") == {"fig-1.png"}
+
+    with pytest.raises(ContractError, match="image_reference_unsafe"):
+        validate_note_image_set("![[../images/fig-1.png]]\n", image_dir, label="Test")
+
+    with pytest.raises(ContractError, match="external_image_forbidden"):
+        validate_note_image_set(
+            "![remote](https://example.org/unreviewed.png)\n",
+            tmp_path / "empty-images",
+            label="Test",
+        )
+
+    with pytest.raises(ContractError, match="html_image_embed_forbidden"):
+        validate_note_image_set(
+            '<img src="images/fig-1.png">\n',
+            image_dir,
+            label="Test",
+        )
 
 
 def test_release_lint_rejects_reader_visible_figure_metadata() -> None:
@@ -340,7 +478,7 @@ def test_release_lint_accepts_reader_facing_section_aliases() -> None:
 
 
 def test_publish_guard_rejects_metadata_even_if_lint_artifact_claims_pass(tmp_path: Path) -> None:
-    record, evidence, context = context_bundle()
+    record, evidence, context = local_context_bundle(tmp_path)
     note = note_text() + "\n<!-- figure-target: doc:main|fig-1 -->\n"
     lint = build_release_lint(note_text(), context)
     lint["note_sha256"] = sha256_text(note)
@@ -416,6 +554,7 @@ def test_publish_guard_rejects_metadata_even_if_lint_artifact_claims_pass(tmp_pa
             artifacts={
                 "paper_record": record,
                 "evidence_pack": evidence,
+                "synthesis_bundle": context,
                 "note_plan": plan,
                 "lint_report": lint,
                 "quality_review": quality,

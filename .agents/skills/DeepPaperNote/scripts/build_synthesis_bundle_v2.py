@@ -13,7 +13,7 @@ from contracts_v2 import (
     emit_json,
     load_json_object,
     require_same_identity,
-    require_v2_artifact,
+    validate_evidence_pack_artifact,
     validate_paper_record_artifact,
 )
 
@@ -119,10 +119,9 @@ def build_bundle(
     assets: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_paper_record_artifact(paper_record)
-    require_v2_artifact(
+    validate_evidence_pack_artifact(
         evidence,
-        artifact_type="evidence_pack",
-        allow_statuses={"pass"},
+        paper_record_artifact=paper_record,
     )
     paper_id, run_id = require_same_identity(paper_record, evidence)
     figures = figures or {}

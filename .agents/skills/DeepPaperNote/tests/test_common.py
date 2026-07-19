@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from common import (
     clean_local_pdf_stem,
     enrich_metadata,
@@ -13,6 +14,7 @@ from common import (
     extract_local_pdf_hints,
     fetch_arxiv_entries,
     infer_source_type,
+    normalize_openalex_work,
     normalize_pdf_text_artifacts,
     resolve_reference,
     semantic_scholar_headers,
@@ -67,6 +69,18 @@ def test_infer_source_type_for_local_pdf(tmp_path: Path) -> None:
     assert infer_source_type(str(pdf_path)) == "local_pdf"
 
 
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://example.org/paper.pdf?download=1",
+        "https://example.org/PAPER.PDF#page=2",
+        "https://example.org/10.1000/example.pdf?token=abc",
+    ),
+)
+def test_infer_source_type_for_direct_pdf_url_uses_url_path(url: str) -> None:
+    assert infer_source_type(url) == "pdf_url"
+
+
 def test_clean_local_pdf_stem_removes_zotero_style_noise() -> None:
     stem = "Xu 等 - 2025 - Identifying psychiatric manifestations in outpatients with depression and anxiety a large language-182952"
     assert (
@@ -102,6 +116,7 @@ def test_extract_local_pdf_hints_prefers_pdf_metadata_title_and_doi(
         hints["title"]
         == "Identifying psychiatric manifestations in outpatients with depression and anxiety: a large language model-based approach"
     )
+    assert hints["title_source"] == "metadata"
     assert hints["doi"] == "10.1038/s44184-025-00175-1"
 
 
@@ -128,6 +143,7 @@ def test_extract_local_pdf_hints_falls_back_to_first_page_title(
     hints = extract_local_pdf_hints(pdf_path)
 
     assert hints["title"] == "LLaMA: Open and Efficient Foundation Language Models"
+    assert hints["title_source"] == "first_page"
     assert hints["doi"] == "10.1038/s44184-025-00175-1"
 
 
@@ -151,18 +167,50 @@ def test_resolve_reference_local_pdf_uses_extracted_hints(tmp_path: Path, monkey
     assert resolved["arxiv_id"] == "2302.13971"
 
 
-def test_env_config_value_falls_back_to_shell_file(tmp_path: Path, monkeypatch) -> None:
-    shell_file = tmp_path / ".zshenv"
-    shell_file.write_text(
-        '\n# comment\nexport DEEPPAPERNOTE_SEMANTIC_SCHOLAR_API_KEY="file_based_key"\n',
-        encoding="utf-8",
+def test_resolve_reference_rejects_unstructured_article_url() -> None:
+    resolved = resolve_reference("https://example.org/publisher/article")
+
+    assert resolved["status"] == "unsupported_url"
+    assert resolved["source_type"] == "url"
+    assert resolved["resolution_candidates"] == []
+
+
+def test_openalex_landing_page_is_not_treated_as_pdf() -> None:
+    normalized = normalize_openalex_work(
+        {
+            "display_name": "Example Paper",
+            "primary_location": {},
+            "best_oa_location": {
+                "pdf_url": None,
+                "landing_page_url": "https://example.org/article",
+            },
+        }
     )
+
+    assert normalized["pdf_url"] == ""
+
+
+def test_env_config_value_uses_process_environment_only(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPPAPERNOTE_SEMANTIC_SCHOLAR_API_KEY", "process_key")
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "fallback_key")
+
+    assert env_config_value("DEEPPAPERNOTE_SEMANTIC_SCHOLAR_API_KEY") == "process_key"
+    assert semantic_scholar_headers()["x-api-key"] == "process_key"
+
+
+def test_env_config_value_uses_explicit_default(monkeypatch) -> None:
     monkeypatch.delenv("DEEPPAPERNOTE_SEMANTIC_SCHOLAR_API_KEY", raising=False)
     monkeypatch.delenv("SEMANTIC_SCHOLAR_API_KEY", raising=False)
-    monkeypatch.setattr("common.SHELL_CONFIG_FILES", [shell_file])
 
-    assert env_config_value("DEEPPAPERNOTE_SEMANTIC_SCHOLAR_API_KEY") == "file_based_key"
-    assert semantic_scholar_headers()["x-api-key"] == "file_based_key"
+    assert (
+        env_config_value(
+            "DEEPPAPERNOTE_SEMANTIC_SCHOLAR_API_KEY",
+            "SEMANTIC_SCHOLAR_API_KEY",
+            default="",
+        )
+        == ""
+    )
+    assert "x-api-key" not in semantic_scholar_headers()
 
 
 def test_fetch_arxiv_entries_returns_empty_on_http_error(monkeypatch) -> None:

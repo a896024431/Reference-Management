@@ -21,14 +21,7 @@ ARXIV_NS = {
 SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 CROSSREF_WORKS_URL = "https://api.crossref.org/works"
-DEFAULT_USER_AGENT = "DeepPaperNote/0.1"
-SHELL_CONFIG_FILES = [
-    Path.home() / ".zshenv",
-    Path.home() / ".zprofile",
-    Path.home() / ".zshrc",
-    Path.home() / ".bash_profile",
-    Path.home() / ".bashrc",
-]
+DEFAULT_USER_AGENT = "DeepPaperNote/1"
 
 try:
     import fitz  # type: ignore
@@ -143,41 +136,10 @@ def slugify_filename(text: str) -> str:
     return text or "paper_note"
 
 
-def shell_config_value(name: str) -> str:
-    pattern = re.compile(rf"^\s*(?:export\s+)?{re.escape(name)}=(.*)$")
-    for path in SHELL_CONFIG_FILES:
-        if not path.exists() or not path.is_file():
-            continue
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except Exception:
-            continue
-        for raw_line in reversed(lines):
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            match = pattern.match(line)
-            if not match:
-                continue
-            value = match.group(1).strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-                value = value[1:-1]
-            return value.strip()
-    return ""
-
-
 def env_config_value(*names: str, default: str = "") -> str:
+    """Read an optional integration value from the current process environment only."""
     for name in names:
         value = os.environ.get(name, "").strip()
-        if value:
-            return value
-    disable_shell_fallback = (
-        os.environ.get("DEEPPAPERNOTE_DISABLE_SHELL_CONFIG", "").strip().lower()
-    )
-    if disable_shell_fallback in {"1", "true", "yes", "on"}:
-        return default
-    for name in names:
-        value = shell_config_value(name)
         if value:
             return value
     return default
@@ -273,10 +235,10 @@ def infer_source_type(value: str) -> str:
     if is_probable_url(stripped):
         if extract_arxiv_id(stripped):
             return "arxiv_url"
+        if urllib.parse.urlparse(stripped).path.lower().endswith(".pdf"):
+            return "pdf_url"
         if extract_doi(stripped):
             return "doi_url"
-        if stripped.lower().endswith(".pdf"):
-            return "pdf_url"
         return "url"
     if extract_arxiv_id(stripped):
         return "arxiv_id"
@@ -576,9 +538,7 @@ def normalize_openalex_work(item: dict[str, Any]) -> dict[str, Any]:
     pdf_url = normalize_whitespace(str((primary_location.get("pdf_url") or "")))
     if not pdf_url:
         best_oa = item.get("best_oa_location", {}) or {}
-        pdf_url = normalize_whitespace(
-            str(best_oa.get("pdf_url") or best_oa.get("landing_page_url") or "")
-        )
+        pdf_url = normalize_whitespace(str(best_oa.get("pdf_url") or ""))
     venue = normalize_whitespace(
         str((primary_location.get("source", {}) or {}).get("display_name", ""))
     )
@@ -849,10 +809,11 @@ def resolve_reference(value: str) -> dict[str, Any]:
         if doi:
             return resolve_reference(doi)
         paper = {
-            "status": "ok",
+            "status": "unsupported_url",
             "source_type": "url",
             "source_url": stripped,
             "metadata_sources": ["url"],
+            "resolution_candidates": [],
         }
         paper["paper_id"] = paper_id_for_record(paper)
         return paper
@@ -1028,7 +989,10 @@ def first_page_title_candidate(first_page_text: str) -> str:
 def extract_local_pdf_hints(pdf_path: Path) -> dict[str, Any]:
     raw_title = normalize_whitespace(pdf_path.stem.replace("_", " "))
     cleaned_title = clean_local_pdf_stem(pdf_path.stem)
-    hints: dict[str, Any] = {"title": cleaned_title or raw_title}
+    hints: dict[str, Any] = {
+        "title": cleaned_title or raw_title,
+        "title_source": "filename",
+    }
     if fitz is None:
         return hints
 
@@ -1052,10 +1016,12 @@ def extract_local_pdf_hints(pdf_path: Path) -> dict[str, Any]:
 
     if metadata_title:
         hints["title"] = metadata_title
+        hints["title_source"] = "metadata"
     else:
         page_title = first_page_title_candidate(first_page_text)
         if page_title:
             hints["title"] = page_title
+            hints["title_source"] = "first_page"
 
     searchable = "\n".join(
         part for part in [metadata_subject, metadata_title, first_page_text] if part

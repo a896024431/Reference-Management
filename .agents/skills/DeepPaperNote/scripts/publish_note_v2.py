@@ -4,26 +4,32 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import re
 import shutil
 import uuid
+import warnings
 from pathlib import Path
 from typing import Any
 
 from contracts_v2 import (
     ContractError,
     artifact_header,
+    canonical_json_sha256,
     emit_json,
+    evidence_units_sha256,
     load_json_object,
     note_plan_bound_evidence_ids,
     require_note_hash,
     require_same_identity,
     require_v2_artifact,
+    sha256_file,
+    sha256_text,
+    validate_evidence_pack_artifact,
     validate_note_plan_artifact,
     validate_paper_record_artifact,
     validate_review_artifact,
+    validate_run_id,
 )
 from figure_contracts_v2 import (
     figure_note_alignment_issues,
@@ -31,15 +37,19 @@ from figure_contracts_v2 import (
     normalize_figure_decisions,
     normalize_figure_manifest,
 )
-from figure_visual_review_contracts_v2 import (
-    canonical_json_sha256,
-    validate_figure_visual_review,
-)
+from figure_visual_review_contracts_v2 import validate_figure_visual_review
 from lint_note_v2 import reader_visible_figure_metadata_issues
-from vault import parse_frontmatter, validate_frontmatter_properties, validate_image_file
-
-NOTE_FILENAME = "笔记.md"
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
+from rebuild_paper_navigation import write_navigation_atomic
+from vault import (
+    IMAGE_EXTENSIONS,
+    NAVIGATION_PATH,
+    NOTE_FILENAME,
+    lint_vault,
+    paper_local_image_names,
+    parse_frontmatter,
+    validate_frontmatter_properties,
+    validate_image_file,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -48,6 +58,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--vault", required=True)
     command.add_argument("--paper-record", required=True)
     command.add_argument("--evidence", required=True)
+    command.add_argument("--synthesis-bundle", required=True)
     command.add_argument("--note-plan", required=True)
     command.add_argument("--lint", required=True)
     command.add_argument("--quality", required=True)
@@ -58,7 +69,6 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--figure-visual-review", required=True)
     command.add_argument("--backup-root", default="")
     command.add_argument("--output", default="")
-    command.add_argument("--dry-run", action="store_true")
     return command
 
 def _safe_folder_name(title: str) -> str:
@@ -66,6 +76,28 @@ def _safe_folder_name(title: str) -> str:
     if not cleaned:
         raise ContractError("Canonical title becomes empty after removing invalid path characters")
     return cleaned
+
+
+def _normalize_doi(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    return re.sub(r"^(?:doi:\s*|https?://(?:dx\.)?doi\.org/)", "", text)
+
+
+def _normalize_arxiv(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    text = re.sub(r"^(?:arxiv:\s*|https?://arxiv\.org/(?:abs|pdf)/)", "", text)
+    text = text.removesuffix(".pdf")
+    return re.sub(r"v\d+$", "", text)
+
+
+def _normalize_authors(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        " ".join(str(author).split()).casefold()
+        for author in value
+        if str(author).strip()
+    )
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -86,10 +118,31 @@ def _safe_remove_tree(path: Path, *, allowed_root: Path) -> None:
         shutil.rmtree(resolved)
 
 
+def validate_operational_paths(
+    *,
+    vault: Path,
+    backup_root: Path,
+    output: Path | None,
+) -> None:
+    """Keep rollback/report artifacts outside reader-facing and tracked Vault content."""
+    research = (vault / "Research").resolve()
+    if _inside(backup_root, research):
+        raise ContractError("backup_root must stay outside reader-facing Research/")
+    if output is None or not _inside(output, vault):
+        return
+    local_root = (vault / ".local").resolve()
+    if not _inside(output, local_root):
+        raise ContractError("publish report output inside the Vault must stay under .local/")
+    published_root = (local_root / "deeppapernote" / "published").resolve()
+    if _inside(output, published_root):
+        raise ContractError("publish report output must not overwrite any publish audit")
+
+
 def _load_artifacts(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
     return {
         "paper_record": load_json_object(args.paper_record),
         "evidence_pack": load_json_object(args.evidence),
+        "synthesis_bundle": load_json_object(args.synthesis_bundle),
         "note_plan": load_json_object(args.note_plan),
         "lint_report": load_json_object(args.lint),
         "quality_review": load_json_object(args.quality),
@@ -116,14 +169,29 @@ def validate_visual_review_for_publish(
     )
     require_same_identity(visual_review, contact_sheet, *artifacts.values())
 
-def _referenced_image_names(note_text: str) -> set[str]:
-    names: set[str] = set()
-    for target in re.findall(r"!\[\[([^\]]+)\]\]", note_text):
-        path = target.split("|", 1)[0].strip()
-        names.add(Path(path).name)
-    for target in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", note_text):
-        names.add(Path(target.strip().strip("<>")).name)
-    return names
+def _image_names(image_dir: Path) -> set[str]:
+    if not image_dir.exists():
+        return set()
+    if not image_dir.is_dir():
+        raise ContractError(f"images is not a directory: {image_dir}")
+    return {item.name for item in image_dir.iterdir() if item.is_file()}
+
+
+def validate_note_image_set(note_text: str, image_dir: Path, *, label: str) -> set[str]:
+    """Require local image references and on-disk image files to match exactly."""
+    referenced, failures = paper_local_image_names(note_text)
+    actual = _image_names(image_dir)
+    missing = sorted(referenced - actual)
+    orphaned = sorted(actual - referenced)
+    failures.extend(f"image_missing:{name}" for name in missing)
+    failures.extend(f"image_orphan:{name}" for name in orphaned)
+    for name in sorted(actual):
+        corruption = validate_image_file(image_dir / name)
+        if corruption:
+            failures.append(f"image_corrupt:{name}:{corruption}")
+    if failures:
+        raise ContractError(f"{label} image release gate failed: " + "; ".join(failures))
+    return actual
 
 
 def expected_evidence_level(paper_record: dict[str, Any]) -> str:
@@ -201,6 +269,82 @@ def validate_note_plan_evidence(
         )
 
 
+def validate_synthesis_binding(
+    paper_record: dict[str, Any],
+    evidence: dict[str, Any],
+    context: dict[str, Any],
+) -> str:
+    """Rebuild the synthesis fields that determine note and review semantics."""
+    record = paper_record["paper_record"]
+    pack = evidence["evidence_pack"]
+    expected_fields = {
+        "metadata": record["metadata"],
+        "document_index": record["documents"],
+        "paper_type": pack["paper_type"],
+        "evidence_quality": pack["evidence_quality"],
+        "coverage": pack["coverage"],
+        "evidence_units": pack["evidence_units"],
+    }
+    for field, expected in expected_fields.items():
+        if canonical_json_sha256(context.get(field)) != canonical_json_sha256(expected):
+            raise ContractError(f"synthesis_bundle.{field} does not match validated source data")
+    if context.get("title") != record["metadata"].get("title"):
+        raise ContractError("synthesis_bundle.title does not match paper_record metadata.title")
+    return str(pack["paper_type"])
+
+
+def validate_figure_sources(
+    manifest: dict[str, Any],
+    paper_record: dict[str, Any],
+) -> None:
+    documents = {
+        str(document["document_id"]): document
+        for document in paper_record["paper_record"]["documents"]
+    }
+    for index, asset in enumerate(manifest.get("assets", [])):
+        document_id = str(asset.get("document_id", ""))
+        document = documents.get(document_id)
+        if document is None:
+            raise ContractError(
+                f"figure_manifest.assets[{index}] refers to unknown document {document_id!r}"
+            )
+        page_number = asset.get("page_number")
+        if (
+            not isinstance(page_number, int)
+            or isinstance(page_number, bool)
+            or not 1 <= page_number <= int(document["pages"])
+        ):
+            raise ContractError(
+                f"figure_manifest.assets[{index}] page is outside its source document"
+            )
+        asset_role = str(asset.get("document_role", "")).strip()
+        if asset_role and asset_role != document["role"]:
+            raise ContractError(
+                f"figure_manifest.assets[{index}] document_role does not match paper_record"
+            )
+
+
+def validate_figure_intent_decisions(
+    note_plan: dict[str, Any], decisions: dict[str, Any]
+) -> None:
+    intents = note_plan["note_plan"].get("figure_intents", [])
+    required = {
+        str(item.get("target_id", "")).strip()
+        for item in intents
+        if isinstance(item, dict)
+    }
+    decided = {
+        str(item.get("target_id", "")).strip()
+        for item in decisions.get("decisions", [])
+        if isinstance(item, dict)
+    }
+    missing = sorted(required - decided)
+    if missing:
+        raise ContractError(
+            "note_plan figure intents lack final decisions: " + ", ".join(missing)
+        )
+
+
 def validate_release(
     *,
     staging_dir: Path,
@@ -208,6 +352,7 @@ def validate_release(
 ) -> dict[str, Any]:
     paper_record = artifacts["paper_record"]
     evidence = artifacts["evidence_pack"]
+    context = artifacts["synthesis_bundle"]
     note_plan = artifacts["note_plan"]
     lint = artifacts["lint_report"]
     quality = artifacts["quality_review"]
@@ -218,20 +363,31 @@ def validate_release(
         artifact_type="paper_record",
         allow_statuses={"pass"},
     )
-    require_v2_artifact(
+    validate_evidence_pack_artifact(
         evidence,
-        artifact_type="evidence_pack",
-        allow_statuses={"pass"},
+        paper_record_artifact=paper_record,
+        verify_files=True,
     )
+    require_v2_artifact(context, artifact_type="synthesis_bundle", allow_statuses={"pass"})
+    paper_type = validate_synthesis_binding(paper_record, evidence, context)
+    if evidence_units_sha256(context) != evidence_units_sha256(
+        evidence["evidence_pack"]["evidence_units"]
+    ):
+        raise ContractError("synthesis_bundle evidence units do not match evidence_pack")
     validate_note_plan_artifact(note_plan)
     validate_note_plan_evidence(note_plan, evidence)
+    if note_plan["note_plan"]["paper_type"] != paper_type:
+        raise ContractError(
+            "note_plan.paper_type must match evidence_pack and synthesis_bundle paper_type"
+        )
     require_v2_artifact(lint, artifact_type="lint_report", allow_statuses={"pass"})
-    validate_review_artifact(quality, kind="quality")
-    validate_review_artifact(readability, kind="readability")
+    validate_review_artifact(quality, kind="quality", context=context)
+    validate_review_artifact(readability, kind="readability", context=context, lint=lint)
     if str(quality["author"]).casefold() != str(readability["author"]).casefold():
         raise ContractError("Quality and readability reviews must name the same note author")
 
     manifest = normalize_figure_manifest(artifacts["figure_manifest"], verify_files=True)
+    validate_figure_sources(manifest, paper_record)
     decisions = normalize_figure_decisions(
         artifacts["figure_decisions"],
         manifest=manifest,
@@ -239,9 +395,11 @@ def validate_release(
     )
     require_v2_artifact(manifest, artifact_type="figure_manifest", allow_statuses={"pass"})
     require_v2_artifact(decisions, artifact_type="figure_decisions", allow_statuses={"pass"})
+    validate_figure_intent_decisions(note_plan, decisions)
     paper_id, run_id = require_same_identity(
         paper_record,
         evidence,
+        context,
         note_plan,
         lint,
         quality,
@@ -268,6 +426,10 @@ def validate_release(
         raise ContractError("Frontmatter release gate failed: " + ", ".join(codes))
     if parsed.properties.get("note_status") != "polished":
         raise ContractError("Formal publishing requires note_status: polished")
+    if parsed.properties.get("paper_type") != paper_type:
+        raise ContractError(
+            "Frontmatter paper_type must match evidence, synthesis, and note plan"
+        )
     evidence_level = expected_evidence_level(paper_record)
     if parsed.properties.get("evidence_level") != evidence_level:
         raise ContractError(
@@ -288,21 +450,23 @@ def validate_release(
     alignment = figure_note_alignment_issues(note_text, decisions, materialized=materialized)
     if alignment:
         raise ContractError("Figure/note alignment failed: " + "; ".join(alignment))
-    referenced = _referenced_image_names(note_text)
-    image_failures: list[str] = []
-    for image in sorted(image_dir.iterdir()):
-        corruption = validate_image_file(image)
-        if corruption:
-            image_failures.append(f"image_corrupt:{image.name}:{corruption}")
-        if image.name not in referenced:
-            image_failures.append(f"image_orphan:{image.name}")
-    if image_failures:
-        raise ContractError("Image release gate failed: " + "; ".join(image_failures))
+    image_names = validate_note_image_set(note_text, image_dir, label="Staging")
+    materialized_names = {str(item["filename"]) for item in materialized}
+    if image_names != materialized_names:
+        raise ContractError(
+            "Staging images must exactly match inserted, reviewed manifest assets"
+        )
 
     metadata = paper_record["paper_record"]["metadata"]
     title = str(metadata.get("title", "")).strip()
     if parsed.properties.get("title") != title:
         raise ContractError("Frontmatter title must match paper_record metadata.title")
+    doi = _normalize_doi(metadata.get("doi", ""))
+    arxiv = _normalize_arxiv(metadata.get("arxiv_id") or metadata.get("arxiv", ""))
+    if not doi and paper_id.casefold().startswith("doi:"):
+        doi = _normalize_doi(paper_id)
+    if not arxiv and paper_id.casefold().startswith("arxiv:"):
+        arxiv = _normalize_arxiv(paper_id)
     return {
         "paper_id": paper_id,
         "run_id": run_id,
@@ -312,16 +476,102 @@ def validate_release(
         "manifest": manifest,
         "decisions": decisions,
         "materialized": materialized,
+        "image_names": sorted(image_names),
         "evidence_level": evidence_level,
         "figure_status": figure_status,
+        "doi": doi,
+        "arxiv": arxiv,
+        "year": str(parsed.properties.get("year", "")).strip(),
+        "authors": list(_normalize_authors(parsed.properties.get("authors", []))),
     }
 
 
 def _prepare_directory(*, staging_dir: Path, prepared: Path) -> None:
     """Prepare only reader-facing Vault content."""
     prepared.mkdir(parents=True, exist_ok=False)
-    shutil.copy2(staging_dir / NOTE_FILENAME, prepared / NOTE_FILENAME)
-    shutil.copytree(staging_dir / "images", prepared / "images")
+    note_text = (staging_dir / NOTE_FILENAME).read_text(encoding="utf-8")
+    with (prepared / NOTE_FILENAME).open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(note_text)
+    image_dir = staging_dir / "images"
+    if any(image_dir.iterdir()):
+        shutil.copytree(image_dir, prepared / "images")
+
+
+def validate_existing_target_identity(target: Path, release: dict[str, Any]) -> None:
+    """Refuse to replace an unrelated paper whose sanitized folder name collides."""
+    if not target.exists():
+        return
+    note_path = target / NOTE_FILENAME
+    if not note_path.is_file():
+        raise ContractError(f"Existing paper target has no regular {NOTE_FILENAME}: {target}")
+    parsed = parse_frontmatter(note_path.read_text(encoding="utf-8-sig"))
+    existing_title = str(parsed.properties.get("title", "")).strip()
+    incoming_doi = _normalize_doi(release.get("doi", ""))
+    existing_doi = _normalize_doi(parsed.properties.get("doi", ""))
+    incoming_arxiv = _normalize_arxiv(release.get("arxiv", ""))
+    existing_arxiv = _normalize_arxiv(parsed.properties.get("arxiv", ""))
+    identifier_mismatch = bool(
+        (incoming_doi and existing_doi and incoming_doi != existing_doi)
+        or (incoming_arxiv and existing_arxiv and incoming_arxiv != existing_arxiv)
+    )
+    shared_identifier = bool(
+        (incoming_doi and existing_doi and incoming_doi == existing_doi)
+        or (incoming_arxiv and existing_arxiv and incoming_arxiv == existing_arxiv)
+    )
+    fallback_identity_mismatch = False
+    if not shared_identifier:
+        incoming_year = str(release.get("year", "")).strip()
+        existing_year = str(parsed.properties.get("year", "")).strip()
+        incoming_authors = _normalize_authors(release.get("authors", []))
+        existing_authors = _normalize_authors(parsed.properties.get("authors", []))
+        fallback_identity_mismatch = bool(
+            not incoming_year
+            or not existing_year
+            or not incoming_authors
+            or not existing_authors
+            or incoming_year != existing_year
+            or incoming_authors != existing_authors
+        )
+    if (
+        parsed.errors
+        or existing_title != release["title"]
+        or identifier_mismatch
+        or fallback_identity_mismatch
+    ):
+        raise ContractError(
+            "Canonical title collides with an existing paper directory: "
+            f"incoming={release['title']!r}, existing={existing_title or '<invalid>'!r}"
+        )
+
+
+def validate_published_target(target: Path, release: dict[str, Any]) -> None:
+    """Recheck the committed reader-facing directory, including LF and image parity."""
+    expected = {NOTE_FILENAME}
+    if release["image_names"]:
+        expected.add("images")
+    actual = {item.name for item in target.iterdir()}
+    if actual != expected:
+        raise ContractError(
+            "Published directory contents changed during commit: "
+            f"expected={sorted(expected)!r}, actual={sorted(actual)!r}"
+        )
+    note_path = target / NOTE_FILENAME
+    note_bytes = note_path.read_bytes()
+    if b"\r" in note_bytes:
+        raise ContractError("Published note must use LF line endings")
+    note_text = note_bytes.decode("utf-8")
+    if sha256_text(note_text) != release["note_sha256"]:
+        raise ContractError("Published note hash differs from the validated staging note")
+    image_names = validate_note_image_set(note_text, target / "images", label="Published")
+    if image_names != set(release["image_names"]):
+        raise ContractError("Published image set differs from the validated staging image set")
+    expected_hashes = {
+        str(item["filename"]): str(item["file_sha256"])
+        for item in release.get("materialized", [])
+    }
+    for name, expected_hash in expected_hashes.items():
+        if sha256_file(target / "images" / name) != expected_hash:
+            raise ContractError(f"Published image hash mismatch: {name}")
 
 
 def publish_transaction(
@@ -334,13 +584,13 @@ def publish_transaction(
     research = vault / "Research"
     research.mkdir(parents=True, exist_ok=True)
     target = research / release["folder_name"]
+    validate_existing_target_identity(target, release)
     prepared = research / f".{release['folder_name']}.publish-{uuid.uuid4().hex}"
     if not _inside(prepared, research):
         raise ContractError("Prepared publish directory escaped Research")
-    _prepare_directory(staging_dir=staging_dir, prepared=prepared)
-
     backup_target: Path | None = None
     try:
+        _prepare_directory(staging_dir=staging_dir, prepared=prepared)
         if target.exists():
             backup_root.mkdir(parents=True, exist_ok=True)
             backup_target = backup_root / release["folder_name"]
@@ -362,19 +612,53 @@ def publish_transaction(
     return target, backup_target
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _audit_target(vault: Path, run_id: str) -> Path:
-    safe_run_id = re.sub(r"[^A-Za-z0-9._-]+", "-", run_id).strip(".-")
-    if not safe_run_id or safe_run_id != run_id:
-        raise ContractError(f"Unsafe run_id for audit directory: {run_id}")
+    safe_run_id = validate_run_id(run_id)
     return vault / ".local" / "deeppapernote" / "published" / safe_run_id
+
+
+def validate_existing_audit_identity(audit_target: Path, release: dict[str, Any]) -> None:
+    if not audit_target.exists():
+        return
+    snapshot_path = audit_target / "snapshot.json"
+    try:
+        snapshot = load_json_object(snapshot_path)
+        require_v2_artifact(
+            snapshot,
+            artifact_type="published_audit",
+            allow_statuses={"pass"},
+        )
+    except Exception as exc:
+        raise ContractError(f"Existing publish audit is unreadable: {snapshot_path}") from exc
+    if (
+        snapshot.get("paper_id") != release["paper_id"]
+        or snapshot.get("run_id") != release["run_id"]
+    ):
+        raise ContractError(
+            "run_id collides with an existing publish audit for another paper or run"
+        )
+
+
+def _replace_bytes_atomic(target: Path, data: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.parent / f".{target.name}.restore-{uuid.uuid4().hex}"
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _restore_navigation(vault: Path, previous: bytes | None) -> None:
+    target = vault / NAVIGATION_PATH
+    if previous is None:
+        target.unlink(missing_ok=True)
+    else:
+        _replace_bytes_atomic(target, previous)
 
 
 def archive_publish_audit(
@@ -389,6 +673,7 @@ def archive_publish_audit(
 ) -> Path:
     """Write a compact JSON-only audit outside the reader-facing Research tree."""
     audit_target = _audit_target(vault, release["run_id"])
+    validate_existing_audit_identity(audit_target, release)
     audit_root = audit_target.parent
     audit_root.mkdir(parents=True, exist_ok=True)
     temporary = audit_root / f".{release['run_id']}.audit-{uuid.uuid4().hex}"
@@ -400,12 +685,14 @@ def archive_publish_audit(
         emit_json(visual_review, temporary / "figure_visual_review.json")
         emit_json(report, temporary / "publish_report.json")
         image_records = []
-        for image in sorted((target / "images").iterdir(), key=lambda item: item.name.casefold()):
+        image_dir = target / "images"
+        images = image_dir.iterdir() if image_dir.is_dir() else ()
+        for image in sorted(images, key=lambda item: item.name.casefold()):
             if image.is_file() and image.suffix.lower() in IMAGE_EXTENSIONS:
                 image_records.append(
                     {
                         "name": image.name,
-                        "sha256": _sha256_file(image),
+                        "sha256": sha256_file(image),
                         "size_bytes": image.stat().st_size,
                     }
                 )
@@ -421,11 +708,13 @@ def archive_publish_audit(
                     Path("Research") / release["folder_name"] / NOTE_FILENAME
                 ).as_posix(),
                 "note_sha256": release["note_sha256"],
-                "note_file_sha256": _sha256_file(target / NOTE_FILENAME),
+                "note_file_sha256": sha256_file(target / NOTE_FILENAME),
                 "images": image_records,
                 "artifact_files": sorted(path.name for path in temporary.glob("*.json")),
                 "contact_sheet_sha256": canonical_json_sha256(contact_sheet),
                 "visual_review_sha256": canonical_json_sha256(visual_review),
+                "navigation_sha256": report["navigation_sha256"],
+                "vault_lint_summary": report["vault_lint_summary"],
             }
         )
         emit_json(snapshot, temporary / "snapshot.json")
@@ -439,7 +728,15 @@ def archive_publish_audit(
                 os.replace(previous, audit_target)
             raise
         if previous.exists():
-            _safe_remove_tree(previous, allowed_root=audit_root)
+            try:
+                _safe_remove_tree(previous, allowed_root=audit_root)
+            except Exception as exc:
+                warnings.warn(
+                    "Published audit succeeded, but the old audit backup could not be "
+                    f"removed: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
     except Exception:
         if temporary.exists():
             _safe_remove_tree(temporary, allowed_root=audit_root)
@@ -455,6 +752,27 @@ def _rollback_after_audit_failure(
         _safe_remove_tree(target, allowed_root=research)
     if backup and backup.exists():
         os.replace(backup, target)
+
+
+def _rollback_release_state(
+    *,
+    target: Path,
+    backup: Path | None,
+    vault: Path,
+    previous_navigation: bytes | None,
+) -> None:
+    failures: list[str] = []
+    try:
+        _rollback_after_audit_failure(target=target, backup=backup, vault=vault)
+    except Exception as exc:
+        failures.append(f"note:{exc}")
+    try:
+        _restore_navigation(vault, previous_navigation)
+    except Exception as exc:
+        failures.append(f"navigation:{exc}")
+    if failures:
+        raise ContractError("Release rollback was incomplete: " + "; ".join(failures))
+
 
 def main() -> None:
     args = parser().parse_args()
@@ -482,10 +800,17 @@ def main() -> None:
         if args.backup_root
         else vault / ".local" / "deeppapernote" / "rollback" / release["run_id"]
     )
+    report_output = Path(args.output).expanduser().resolve() if args.output else None
+    validate_operational_paths(
+        vault=vault,
+        backup_root=backup_root,
+        output=report_output,
+    )
     predicted_target = vault / "Research" / release["folder_name"]
     predicted_audit = _audit_target(vault, release["run_id"])
-    target: Path | None = None
-    backup: Path | None = None
+    validate_existing_audit_identity(predicted_audit, release)
+    navigation_path = vault / NAVIGATION_PATH
+    previous_navigation = navigation_path.read_bytes() if navigation_path.exists() else None
 
     report = artifact_header(
         "publish_report",
@@ -496,7 +821,6 @@ def main() -> None:
     report.update(
         {
             "publisher": "publish_note_v2",
-            "dry_run": args.dry_run,
             "note_sha256": release["note_sha256"],
             "figure_visual_review_sha256": canonical_json_sha256(visual_review),
             "figure_contact_sheet_sha256": canonical_json_sha256(contact_sheet),
@@ -509,33 +833,90 @@ def main() -> None:
         }
     )
 
-    if not args.dry_run:
-        target, backup = publish_transaction(
-            staging_dir=staging_dir,
-            vault=vault,
-            backup_root=backup_root,
-            release=release,
-        )
-        try:
-            audit = archive_publish_audit(
-                vault=vault,
-                target=target,
-                artifacts=artifacts,
-                contact_sheet=contact_sheet,
-                visual_review=visual_review,
-                release=release,
-                report=report,
+    target, backup = publish_transaction(
+        staging_dir=staging_dir,
+        vault=vault,
+        backup_root=backup_root,
+        release=release,
+    )
+    report["backup"] = str(backup) if backup else ""
+    try:
+        validate_published_target(target, release)
+        navigation = write_navigation_atomic(vault)
+        vault_lint = lint_vault(vault)
+        if vault_lint["status"] != "pass":
+            summary = vault_lint["summary"]
+            raise ContractError(
+                "Strict Vault lint failed after publication: "
+                f"errors={summary['errors']}, warnings={summary['warnings']}"
             )
-            report["audit"] = str(audit)
-        except Exception:
-            _rollback_after_audit_failure(target=target, backup=backup, vault=vault)
-            raise
-        if backup and backup.exists():
-            _safe_remove_tree(backup, allowed_root=backup_root)
-        if backup_root.exists() and not any(backup_root.iterdir()):
-            backup_root.rmdir()
+        navigation_sha256 = sha256_file(navigation)
+        lint_summary = dict(vault_lint["summary"])
+        report.update(
+            {
+                "navigation": str(navigation),
+                "navigation_sha256": navigation_sha256,
+                "vault_lint_status": "pass",
+                "vault_lint_summary": lint_summary,
+                "completion": {
+                    "navigation_sha256": navigation_sha256,
+                    "vault_lint_status": "pass",
+                    "vault_lint_summary": lint_summary,
+                },
+            }
+        )
+        audit = archive_publish_audit(
+            vault=vault,
+            target=target,
+            artifacts=artifacts,
+            contact_sheet=contact_sheet,
+            visual_review=visual_review,
+            release=release,
+            report=report,
+        )
+        report["audit"] = str(audit)
+    except Exception as exc:
+        try:
+            _rollback_release_state(
+                target=target,
+                backup=backup,
+                vault=vault,
+                previous_navigation=previous_navigation,
+            )
+        except Exception as rollback_exc:
+            raise ContractError(str(rollback_exc)) from exc
+        raise
 
-    emit_json(report, args.output or None)
+    if backup and backup.exists():
+        try:
+            _safe_remove_tree(backup, allowed_root=backup_root)
+        except Exception as exc:
+            warnings.warn(
+                f"Publication completed, but the note backup could not be removed: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    if backup_root.exists():
+        try:
+            if not any(backup_root.iterdir()):
+                backup_root.rmdir()
+        except OSError as exc:
+            warnings.warn(
+                f"Publication completed, but the empty rollback directory remains: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    try:
+        emit_json(report, report_output)
+    except OSError as exc:
+        warnings.warn(
+            f"Publication completed, but the requested report output could not be written: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        if report_output is not None:
+            emit_json(report)
 
 
 if __name__ == "__main__":

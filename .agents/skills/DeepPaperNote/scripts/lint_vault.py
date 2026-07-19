@@ -19,11 +19,6 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow missing non-embedded local-library PDF links for a PDF-free CI checkout.",
     )
-    p.add_argument(
-        "--no-fail",
-        action="store_true",
-        help="Always exit zero; useful for migration audits while preserving report status.",
-    )
     return p
 
 
@@ -39,7 +34,7 @@ def main() -> None:
         output.write_text(serialized, encoding="utf-8")
     else:
         print(serialized, end="")
-    if report["status"] != "pass" and not args.no_fail:
+    if report["status"] != "pass":
         raise SystemExit(1)
 
 

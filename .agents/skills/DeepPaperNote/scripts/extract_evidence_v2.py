@@ -12,9 +12,11 @@ from typing import Any
 from common import clean_pdf_line, fitz, normalize_whitespace, split_sentences
 from contracts_v2 import (
     PAPER_TYPES,
+    PROFILE_REQUIREMENTS,
     artifact_header,
     emit_json,
     load_json_object,
+    sha256_file,
     stable_id,
     validate_paper_record_artifact,
 )
@@ -155,19 +157,6 @@ TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "microscopy",
         "heterostructure",
     ),
-}
-
-
-PROFILE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
-    "experimental_physics": ("problem", "protocol", "results"),
-    "theoretical_physics": ("problem", "theory", "results"),
-    "materials_fabrication": ("problem", "fabrication", "results"),
-    "ai_method": ("problem", "protocol", "results"),
-    "benchmark": ("problem", "data", "results"),
-    "clinical": ("problem", "data", "protocol", "results"),
-    "humanities": ("problem", "protocol", "results"),
-    "survey": ("problem", "results"),
-    "generic": ("problem", "protocol", "results"),
 }
 
 
@@ -491,26 +480,6 @@ def _anchor(unit: dict[str, Any]) -> str:
     return f"{label} p. {unit['page']}" + (f", {', '.join(suffix)}" if suffix else "")
 
 
-def _legacy_item(unit: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "evidence_id": unit["evidence_id"],
-        "claim": unit["text"],
-        "evidence": unit["text"],
-        "source_section": unit["section"],
-        "page_hint": _anchor(unit),
-        "document_id": unit["document_id"],
-        "document_role": unit["document_role"],
-        "page": unit["page"],
-    }
-
-
-def _select(
-    units: list[dict[str, Any]], kinds: tuple[str, ...], *, limit: int = 12
-) -> list[dict[str, Any]]:
-    selected = [unit for unit in units if set(unit["types"]) & set(kinds)]
-    return [_legacy_item(unit) for unit in selected[:limit]]
-
-
 def build_evidence_artifact(
     paper_record_artifact: dict[str, Any],
     *,
@@ -543,16 +512,38 @@ def build_evidence_artifact(
     if not any(document.get("role") == "main" for document in documents):
         failures.append("main_document_missing")
     for document in documents:
+        document_id = str(document.get("document_id", ""))
         path = Path(str(document.get("path", ""))).expanduser()
-        if not path.exists():
-            failures.append(f"document_missing:{document.get('document_id', '')}")
+        if not path.is_file():
+            failures.append(f"document_missing:{document_id}")
+            continue
+        resolved_path = path.resolve()
+        try:
+            before_sha = sha256_file(resolved_path)
+        except OSError as exc:
+            failures.append(f"document_hash_failed:{document_id}:{exc}")
+            continue
+        expected_sha = str(document.get("sha256", ""))
+        if before_sha != expected_sha:
+            failures.append(
+                f"document_sha256_mismatch:{document_id}:{expected_sha}/{before_sha}"
+            )
             continue
         try:
-            pages, total_pages = read_pages(path.resolve(), max_pages=max_pages)
+            pages, total_pages = read_pages(resolved_path, max_pages=max_pages)
         except Exception as exc:
-            failures.append(f"document_parse_failed:{document.get('document_id', '')}:{exc}")
+            failures.append(f"document_parse_failed:{document_id}:{exc}")
             continue
-        document_id = str(document.get("document_id", ""))
+        try:
+            after_sha = sha256_file(resolved_path)
+        except OSError as exc:
+            failures.append(f"document_hash_failed_after_extraction:{document_id}:{exc}")
+            continue
+        if after_sha != before_sha:
+            failures.append(
+                f"document_changed_during_extraction:{document_id}:{before_sha}/{after_sha}"
+            )
+            continue
         if int(document.get("pages", 0)) != total_pages:
             failures.append(
                 f"document_page_count_changed:{document_id}:"
@@ -666,14 +657,6 @@ def build_evidence_artifact(
                 }
             )
 
-    results_evidence = _select(units, ("results", "numeric"))
-    results_evidence.sort(
-        key=lambda item: (
-            0 if item.get("source_section") == "results" else 1,
-            int(item.get("page", 0)),
-        )
-    )
-
     pack = {
         "paper_id": paper_id,
         "paper_type": paper_type,
@@ -685,18 +668,9 @@ def build_evidence_artifact(
         "sections": section_records,
         "section_texts": section_texts,
         "candidate_chunks": dict(candidate_chunks),
-        "problem_evidence": _select(units, ("problem",)),
-        "task_evidence": _select(units, ("problem", "data")),
-        "data_evidence": _select(units, ("data",)),
-        "method_evidence": _select(units, ("protocol", "theory", "fabrication")),
-        "mechanism_evidence": _select(units, ("protocol", "theory", "fabrication")),
-        "results_evidence": results_evidence,
-        "ablation_evidence": [],
-        "limitations_evidence": _select(units, ("limitations",)),
         "equation_candidates": equation_candidates[:16],
         "figure_captions": figures,
         "table_captions": tables,
-        "quotes": [],
         "evidence_quality": {"pass": "high", "fail": "low"}[status],
         "extraction_failures": failures,
     }

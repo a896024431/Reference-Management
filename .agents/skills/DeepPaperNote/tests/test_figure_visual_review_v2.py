@@ -6,7 +6,7 @@ from pathlib import Path
 import fitz
 import pytest
 from build_figure_contact_sheet_v2 import build_contact_sheet
-from contracts_v2 import ContractError
+from contracts_v2 import ContractError, canonical_json_sha256
 from figure_contracts_v2 import (
     build_figure_asset_identity,
     make_figure_decisions,
@@ -249,4 +249,48 @@ def test_manifest_hash_mismatch_invalidates_review_and_publish_gate(tmp_path: Pa
             manifest=changed_manifest,
             decisions=decisions,
             contact_sheet=contact_sheet,
+        )
+
+
+def test_stale_decisions_contact_sheet_cannot_review_current_decisions(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "complete.png"
+    _make_png(source)
+    asset = _asset(source)
+    manifest = _manifest(asset)
+    old_decisions = _decisions(asset["asset_id"])
+    old_contact_sheet = build_contact_sheet(
+        manifest=manifest,
+        decisions=old_decisions,
+        run_dir=_run_dir(tmp_path),
+    )
+    current_decisions = deepcopy(old_decisions)
+    current_decisions["decisions"][0]["decision_reason"] = "updated final rationale"
+
+    rejected = build_figure_visual_review(
+        manifest=manifest,
+        decisions=current_decisions,
+        contact_sheet=old_contact_sheet,
+        review_source=_review(asset["asset_id"]),
+    )
+    assert rejected["status"] == "fail"
+    assert (
+        "figure_visual_review_contact_sheet_decisions_hash_mismatch"
+        in rejected["failures"]
+    )
+
+    forged = build_figure_visual_review(
+        manifest=manifest,
+        decisions=old_decisions,
+        contact_sheet=old_contact_sheet,
+        review_source=_review(asset["asset_id"]),
+    )
+    forged["decisions_sha256"] = canonical_json_sha256(current_decisions)
+    with pytest.raises(ContractError, match="Contact-sheet decisions hash mismatch"):
+        validate_figure_visual_review(
+            forged,
+            manifest=manifest,
+            decisions=current_decisions,
+            contact_sheet=old_contact_sheet,
         )

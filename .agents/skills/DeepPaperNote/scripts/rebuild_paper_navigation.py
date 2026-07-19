@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import uuid
 from collections import defaultdict
 from pathlib import Path
 
@@ -116,6 +118,24 @@ def render_navigation(vault_root: Path) -> str:
     return "\n".join(lines)
 
 
+def write_navigation_atomic(vault_root: Path, content: str | None = None) -> Path:
+    """Replace the navigation note atomically using deterministic UTF-8/LF bytes."""
+    target = vault_root / NAVIGATION_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    generated = render_navigation(vault_root) if content is None else content
+    temporary = target.parent / f".{target.name}.tmp-{uuid.uuid4().hex}"
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(generated)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return target
+
+
 def main() -> None:
     args = parser().parse_args()
     vault_root = Path(args.vault).expanduser().resolve()
@@ -129,8 +149,7 @@ def main() -> None:
         if existing != generated:
             raise SystemExit("Research/论文导航.md is stale; rerun rebuild_paper_navigation.py")
         return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(generated, encoding="utf-8")
+    write_navigation_atomic(vault_root, generated)
 
 
 if __name__ == "__main__":

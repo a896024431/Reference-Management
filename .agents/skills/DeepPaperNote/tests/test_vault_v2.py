@@ -16,6 +16,7 @@ from vault import (  # noqa: E402
     build_note_index,
     discover_notes,
     lint_vault,
+    paper_local_image_names,
     parse_base_definition,
     parse_frontmatter,
     render_frontmatter,
@@ -27,6 +28,23 @@ from vault import (  # noqa: E402
 ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+
+
+def test_reader_images_must_be_reviewed_paper_local_embeds() -> None:
+    names, failures = paper_local_image_names(
+        "![remote](https://example.org/figure.png)\n"
+        "![protocol-relative](//example.org/figure.png)\n"
+        "![reference][fig]\n[fig]: https://example.org/figure.png\n"
+        "![shortcut]\n[shortcut]: https://example.org/figure.png\n"
+        '<img src="images/figure.png">\n'
+        "![[images/local.png]]\n"
+    )
+
+    assert names == {"local.png"}
+    assert "external_image_forbidden:https://example.org/figure.png" in failures
+    assert "external_image_forbidden://example.org/figure.png" in failures
+    assert "reference_image_embed_forbidden" in failures
+    assert "html_image_embed_forbidden" in failures
 
 
 def valid_properties(title: str = "Paper One") -> dict[str, object]:
@@ -200,6 +218,18 @@ class VaultLintTests(unittest.TestCase):
             )
             self.assertEqual(report["summary"]["navigation_coverage"], 1)
 
+    def test_note_without_empty_images_directory_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            note_path = build_vault(root)
+            (note_path.parent / "images").rmdir()
+
+            report = lint_vault(root)
+
+            self.assertEqual(
+                report["status"], "pass", json.dumps(report["issues"], ensure_ascii=False)
+            )
+
     def test_broken_link_and_missing_navigation_entry_fail(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -262,6 +292,80 @@ class VaultLintTests(unittest.TestCase):
             codes = {issue["code"] for issue in report["issues"]}
             self.assertIn("image_orphan", codes)
             self.assertIn("image_corrupt", codes)
+
+    def test_no_note_directory_and_its_images_cannot_hide_from_vault_lint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            build_vault(root)
+            stray_images = root / "Research" / "No Note" / "images"
+            stray_images.mkdir(parents=True)
+            (stray_images / "orphan.png").write_bytes(b"not a png")
+
+            report = lint_vault(root)
+            codes = {issue["code"] for issue in report["issues"]}
+
+            self.assertEqual(report["summary"]["images"], 1)
+            self.assertIn("paper_directory_note_missing", codes)
+            self.assertIn("image_orphan", codes)
+            self.assertIn("image_corrupt", codes)
+
+    def test_raster_must_decode_not_merely_resemble_a_png_container(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            build_vault(root)
+            image_path = root / "Research" / "Paper One" / "images" / "fake.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nnot-pixels-IEND")
+
+            self.assertTrue(validate_image_file(image_path).startswith("raster_decode_failed:"))
+
+    def test_paper_directory_and_images_reject_extra_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            note_path = build_vault(root)
+            paper_dir = note_path.parent
+            (paper_dir / "manifest.json").write_text("{}", encoding="utf-8")
+            (paper_dir / "scratch").mkdir()
+            (paper_dir / "images" / "notes.txt").write_text("no", encoding="utf-8")
+            (paper_dir / "images" / "nested").mkdir()
+
+            codes = {issue["code"] for issue in lint_vault(root)["issues"]}
+
+            self.assertIn("paper_directory_extra_entry", codes)
+            self.assertIn("image_extension_unsupported", codes)
+            self.assertIn("images_extra_entry", codes)
+
+    def test_reader_visible_figure_workflow_metadata_fails_vault_lint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            note_path = build_vault(root)
+            note_path.write_text(
+                note_path.read_text(encoding="utf-8")
+                + "\n> [!figure] Fig. 2\n> 当前状态：候选裁剪已通过 QA。\n"
+                + "doc:main|fig-2\n",
+                encoding="utf-8",
+            )
+
+            codes = {issue["code"] for issue in lint_vault(root)["issues"]}
+
+            self.assertIn("figure_placeholder_callout_present", codes)
+            self.assertIn("figure_planning_label_present", codes)
+            self.assertIn("source_figure_target_id_present", codes)
+
+    def test_remote_and_html_images_fail_vault_lint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            note_path = build_vault(root)
+            note_path.write_text(
+                note_path.read_text(encoding="utf-8")
+                + "\n![remote](https://example.org/unreviewed.png)\n"
+                + '<img src="images/unreviewed.png">\n',
+                encoding="utf-8",
+            )
+
+            codes = {issue["code"] for issue in lint_vault(root)["issues"]}
+
+            self.assertIn("external_image_forbidden", codes)
+            self.assertIn("html_image_embed_forbidden", codes)
 
     def test_referenced_valid_image_is_not_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

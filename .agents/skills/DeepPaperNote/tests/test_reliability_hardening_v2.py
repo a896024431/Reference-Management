@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from pathlib import Path
 
 import fitz
@@ -8,11 +9,19 @@ import paper_record_v2
 import pytest
 import run_pipeline_v2
 from common import title_resolution
-from contracts_v2 import ContractError, artifact_header, sha256_file
-from create_paper_record_v2 import create_explicit_record
+from contracts_v2 import (
+    ContractError,
+    artifact_header,
+    canonical_json_sha256,
+    evidence_units_sha256,
+    sha256_file,
+    validate_evidence_pack_artifact,
+    validate_review_artifact,
+    validate_run_id,
+)
 from extract_evidence_v2 import build_contract_evidence
 from lint_note_v2 import build_release_lint
-from paper_record_v2 import fetch_stage, resolve_stage
+from paper_record_v2 import create_explicit_record, fetch_stage, resolve_stage
 from publish_note_v2 import (
     expected_evidence_level,
     expected_figure_status,
@@ -118,6 +127,22 @@ def _quality_review(*, reviewer: str, origin: str = "subagent") -> dict:
     }
 
 
+def _readability_review(*, reviewer: str) -> dict:
+    return {
+        "reviewer": reviewer,
+        "review_origin": "subagent",
+        "independent": True,
+        "scores": {
+            "factual_fidelity": 4,
+            "completeness": 4,
+            "domain_expression": 4,
+            "chinese_naturalness": 4,
+            "navigability": 4,
+        },
+        "unresolved_issues": [],
+    }
+
+
 def test_title_resolution_deduplicates_provider_records_for_one_work() -> None:
     query = "A Shared Quantum Transport Result"
     resolution = title_resolution(
@@ -198,6 +223,32 @@ def test_raw_local_fetch_records_only_safe_vault_relative_path(tmp_path: Path) -
     assert Path(document["path"]).is_absolute()
 
 
+@pytest.mark.parametrize(
+    "unsafe_run_id",
+    (
+        "",
+        ".",
+        "..",
+        "../escape",
+        r"..\escape",
+        "/absolute",
+        r"C:\absolute",
+        "Run-1",
+        "run.",
+        "con",
+        "nul.txt",
+        "a" * 129,
+    ),
+)
+def test_run_id_must_be_a_safe_basename(unsafe_run_id: str) -> None:
+    with pytest.raises(ContractError, match="safe basename"):
+        validate_run_id(unsafe_run_id)
+
+
+def test_run_id_accepts_expected_pipeline_characters() -> None:
+    assert validate_run_id("run-20260719t010203z.retry_2") == "run-20260719t010203z.retry_2"
+
+
 def test_full_text_truncation_is_a_hard_failure(tmp_path: Path) -> None:
     pdf = _make_pdf(tmp_path / "paper.pdf", _evidence_pages())
     record = create_explicit_record(
@@ -259,6 +310,137 @@ def test_document_parse_failure_is_not_degraded(tmp_path: Path) -> None:
     assert any(failure.startswith("document_parse_failed:") for failure in evidence["failures"])
 
 
+def test_strict_evidence_validator_checks_coverage_identity_and_file_sha(tmp_path: Path) -> None:
+    pdf = _make_pdf(
+        tmp_path / "paper.pdf",
+        _evidence_pages(),
+        title="Graphene quantum Hall transport experiment",
+    )
+    record = create_explicit_record(
+        {
+            "title": "Graphene quantum Hall transport experiment",
+            "main_pdf": str(pdf),
+        },
+        run_id="run-strict-evidence",
+        vault_root=str(tmp_path),
+    )
+    evidence = build_contract_evidence(record)
+
+    assert evidence["status"] == "pass", evidence["failures"]
+    validate_evidence_pack_artifact(
+        evidence,
+        paper_record_artifact=record,
+        verify_files=True,
+    )
+
+    url_only_record = copy.deepcopy(record)
+    url_only_evidence = copy.deepcopy(evidence)
+    url_only_record["paper_record"]["documents"][0]["path"] = ""
+    url_only_record["paper_record"]["documents"][0]["url"] = (
+        "https://example.org/paper.pdf"
+    )
+    url_only_evidence["evidence_pack"]["documents"][0]["path"] = ""
+    url_only_evidence["evidence_pack"]["documents"][0]["url"] = (
+        "https://example.org/paper.pdf"
+    )
+    with pytest.raises(ContractError, match="local PDF path is required"):
+        validate_evidence_pack_artifact(
+            url_only_evidence,
+            paper_record_artifact=url_only_record,
+            verify_files=True,
+        )
+
+    wrong_pages_record = copy.deepcopy(record)
+    wrong_pages_evidence = copy.deepcopy(evidence)
+    wrong_pages_record["paper_record"]["documents"][0]["pages"] = 4
+    wrong_pages_evidence["evidence_pack"]["documents"][0]["pages"] = 4
+    wrong_pages_evidence["evidence_pack"]["page_records"].append(
+        {
+            "document_id": wrong_pages_record["paper_record"]["documents"][0]["document_id"],
+            "document_role": "main",
+            "page": 4,
+            "text_chars": 100,
+        }
+    )
+    wrong_pages_evidence["evidence_pack"]["coverage"].update(
+        {"total_pages": 4, "text_pages": 4}
+    )
+    with pytest.raises(ContractError, match="Document page count mismatch"):
+        validate_evidence_pack_artifact(
+            wrong_pages_evidence,
+            paper_record_artifact=wrong_pages_record,
+            verify_files=True,
+        )
+
+    supplement = _make_pdf(tmp_path / "blank-supplement.pdf", [""])
+    weak_supplement_record = copy.deepcopy(record)
+    weak_supplement_evidence = copy.deepcopy(evidence)
+    supplement_document = {
+        "document_id": "doc:blank-supplement",
+        "role": "supplement",
+        "path": str(supplement),
+        "url": "",
+        "source": "test",
+        "sha256": sha256_file(supplement),
+        "pages": 1,
+        "filename": supplement.name,
+    }
+    weak_supplement_record["paper_record"]["documents"].append(supplement_document)
+    weak_supplement_evidence["evidence_pack"]["documents"].append(
+        copy.deepcopy(supplement_document)
+    )
+    weak_supplement_evidence["evidence_pack"]["page_records"].append(
+        {
+            "document_id": supplement_document["document_id"],
+            "document_role": "supplement",
+            "page": 1,
+            "text_chars": 0,
+        }
+    )
+    weak_supplement_evidence["evidence_pack"]["coverage"].update(
+        {"total_pages": 4, "text_pages": 3, "needs_ocr": False}
+    )
+    with pytest.raises(ContractError, match="below 60 percent for doc:blank-supplement"):
+        validate_evidence_pack_artifact(
+            weak_supplement_evidence,
+            paper_record_artifact=weak_supplement_record,
+            verify_files=True,
+        )
+
+    forged_requirements = copy.deepcopy(evidence)
+    forged_requirements["evidence_pack"]["paper_type"] = "generic"
+    forged_requirements["evidence_pack"]["coverage"]["required"] = ["general"]
+    with pytest.raises(ContractError, match="coverage.required does not match"):
+        validate_evidence_pack_artifact(
+            forged_requirements,
+            paper_record_artifact=record,
+            verify_files=True,
+        )
+
+    bad_ocr = copy.deepcopy(evidence)
+    bad_ocr["evidence_pack"]["coverage"]["needs_ocr"] = True
+    with pytest.raises(ContractError, match="must not need OCR"):
+        validate_evidence_pack_artifact(bad_ocr, paper_record_artifact=record)
+
+    bad_failures = copy.deepcopy(evidence)
+    bad_failures["evidence_pack"]["extraction_failures"] = ["hidden_failure"]
+    with pytest.raises(ContractError, match="empty extraction_failures"):
+        validate_evidence_pack_artifact(bad_failures, paper_record_artifact=record)
+
+    bad_identity = copy.deepcopy(evidence)
+    bad_identity["evidence_pack"]["documents"][0]["sha256"] = "f" * 64
+    with pytest.raises(ContractError, match="document identity mismatch"):
+        validate_evidence_pack_artifact(bad_identity, paper_record_artifact=record)
+
+    pdf.write_bytes(b"replaced after evidence extraction")
+    with pytest.raises(ContractError, match="Document sha256 mismatch"):
+        validate_evidence_pack_artifact(
+            evidence,
+            paper_record_artifact=record,
+            verify_files=True,
+        )
+
+
 def test_environment_gate_runs_before_any_run_directory(monkeypatch, tmp_path: Path) -> None:
     args = argparse.Namespace(max_pages=0, vault_root="")
     monkeypatch.setattr(run_pipeline_v2.importlib.util, "find_spec", lambda name: None)
@@ -267,6 +449,102 @@ def test_environment_gate_runs_before_any_run_directory(monkeypatch, tmp_path: P
         run_pipeline_v2.validate_environment(args)
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_environment_gate_rejects_unimportable_fitz(monkeypatch, tmp_path: Path) -> None:
+    args = argparse.Namespace(max_pages=0, vault_root="")
+    monkeypatch.setattr(run_pipeline_v2.importlib.util, "find_spec", lambda name: object())
+
+    def fail_import(name: str):
+        raise OSError(f"broken binary for {name}")
+
+    monkeypatch.setattr(run_pipeline_v2.importlib, "import_module", fail_import)
+
+    with pytest.raises(SystemExit, match="cannot be imported"):
+        run_pipeline_v2.validate_environment(args)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_offline_fetch_never_attempts_doi_metadata_network(monkeypatch, tmp_path: Path) -> None:
+    record = artifact_header(
+        "paper_record", paper_id="doi:10.1000/offline", run_id="run-offline-doi"
+    )
+    record["paper_record"] = {
+        "paper_id": record["paper_id"],
+        "metadata": {"title": "Offline DOI paper", "doi": "10.1000/offline"},
+        "documents": [],
+    }
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        paper_record_v2,
+        "enrich_metadata",
+        lambda metadata: calls.append(metadata) or metadata,
+    )
+
+    fetched = fetch_stage(
+        record,
+        supplements=[],
+        dest_dir=str(tmp_path / "downloads"),
+        offline=True,
+    )
+
+    assert fetched["status"] == "fail"
+    assert fetched["failures"] == ["offline_main_pdf_missing"]
+    assert calls == []
+
+
+def test_direct_pdf_download_refreshes_title_from_pdf_identity(monkeypatch, tmp_path: Path) -> None:
+    pdf = _make_pdf(
+        tmp_path / "download.pdf",
+        _evidence_pages(),
+        title="Recovered Canonical Paper Title",
+    )
+    resolved = resolve_stage(
+        "https://example.org/download.pdf?token=abc",
+        run_id="run-direct-pdf",
+    )
+    monkeypatch.setattr(
+        paper_record_v2,
+        "_materialize_source",
+        lambda *args, **kwargs: (pdf, "downloaded", "https://example.org/download.pdf"),
+    )
+
+    fetched = fetch_stage(resolved, supplements=[], dest_dir=str(tmp_path / "downloads"))
+
+    assert fetched["status"] == "pass", fetched["failures"]
+    assert fetched["paper_record"]["metadata"]["title"] == "Recovered Canonical Paper Title"
+    assert fetched["paper_id"].startswith("title:")
+
+
+def test_direct_pdf_download_without_trustworthy_title_fails_closed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    pdf_path = tmp_path / "opaque-8f6e2c.pdf"
+    pdf = fitz.open()
+    try:
+        pdf.new_page()
+        pdf.save(pdf_path)
+    finally:
+        pdf.close()
+    resolved = resolve_stage(
+        "https://example.org/opaque-8f6e2c.pdf",
+        run_id="run-direct-pdf-unknown",
+    )
+    monkeypatch.setattr(
+        paper_record_v2,
+        "_materialize_source",
+        lambda *args, **kwargs: (
+            pdf_path,
+            "downloaded",
+            "https://example.org/opaque-8f6e2c.pdf",
+        ),
+    )
+
+    fetched = fetch_stage(resolved, supplements=[], dest_dir=str(tmp_path / "downloads"))
+
+    assert fetched["status"] == "fail"
+    assert any("trustworthy title" in failure for failure in fetched["failures"])
 
 
 def test_note_plan_requires_nested_evidence_bindings() -> None:
@@ -325,6 +603,83 @@ def test_independent_review_records_author_reviewer_and_origin() -> None:
     assert artifact["author"] == "note-author"
     assert artifact["reviewer"] == "review-subagent"
     assert artifact["review_origin"] == "subagent"
+    assert artifact["evidence_units_sha256"] == evidence_units_sha256(_context())
+    assert artifact["synthesis_bundle_sha256"] == canonical_json_sha256(_context())
+
+
+def test_review_validators_bind_claims_and_readability_to_evidence_context() -> None:
+    context = _context()
+    note = note_text()
+    lint = build_release_lint(note, context)
+    quality = build_review_artifact(
+        kind="quality",
+        author="note-author",
+        note_text=note,
+        review_source=_quality_review(reviewer="quality-reviewer"),
+        context=context,
+    )
+    readability = build_review_artifact(
+        kind="readability",
+        author="note-author",
+        note_text=note,
+        review_source=_readability_review(reviewer="readability-reviewer"),
+        context=context,
+        lint=lint,
+    )
+
+    expected_hash = evidence_units_sha256(context)
+    assert quality["evidence_units_sha256"] == expected_hash
+    assert readability["evidence_units_sha256"] == expected_hash
+    assert quality["synthesis_bundle_sha256"] == canonical_json_sha256(context)
+    assert readability["synthesis_bundle_sha256"] == canonical_json_sha256(context)
+    validate_review_artifact(quality, kind="quality", context=context)
+    validate_review_artifact(readability, kind="readability", context=context, lint=lint)
+
+    too_few_claims = copy.deepcopy(quality)
+    too_few_claims["review"]["claims_checked"] = too_few_claims["review"][
+        "claims_checked"
+    ][:2]
+    with pytest.raises(ContractError, match="at least three claims"):
+        validate_review_artifact(too_few_claims, kind="quality", context=context)
+
+    unknown_evidence = copy.deepcopy(quality)
+    unknown_evidence["review"]["claims_checked"][0]["evidence_ids"] = ["ev:unknown"]
+    with pytest.raises(ContractError, match="unknown evidence IDs"):
+        validate_review_artifact(unknown_evidence, kind="quality", context=context)
+
+    stale_lint_binding = copy.deepcopy(readability)
+    stale_lint_binding["lint_note_sha256"] = "0" * 64
+    with pytest.raises(ContractError, match="passing lint report"):
+        validate_review_artifact(
+            stale_lint_binding,
+            kind="readability",
+            context=context,
+            lint=lint,
+        )
+
+    duplicate_claims = copy.deepcopy(quality)
+    duplicate_claims["review"]["claims_checked"] = [
+        copy.deepcopy(duplicate_claims["review"]["claims_checked"][0]) for _ in range(3)
+    ]
+    with pytest.raises(ContractError, match="distinct claims"):
+        validate_review_artifact(duplicate_claims, kind="quality", context=context)
+
+    changed_context = copy.deepcopy(context)
+    changed_context["evidence_units"][0]["text"] += " changed"
+    with pytest.raises(ContractError, match="does not match synthesis context"):
+        validate_review_artifact(quality, kind="quality", context=changed_context)
+    with pytest.raises(ContractError, match="does not match synthesis context"):
+        validate_review_artifact(
+            readability,
+            kind="readability",
+            context=changed_context,
+            lint=lint,
+        )
+
+    changed_profile = copy.deepcopy(context)
+    changed_profile["paper_type"] = "generic"
+    with pytest.raises(ContractError, match="does not match synthesis context"):
+        validate_review_artifact(quality, kind="quality", context=changed_profile)
 
 
 def test_self_review_and_untrusted_review_origin_fail() -> None:

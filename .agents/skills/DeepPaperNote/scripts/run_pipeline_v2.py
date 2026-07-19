@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
 import subprocess
@@ -17,6 +18,7 @@ from contracts_v2 import (
     load_json_object,
     require_v2_artifact,
     utc_run_id,
+    validate_run_id,
 )
 from figure_contracts_v2 import normalize_figure_decisions, normalize_figure_manifest
 
@@ -24,7 +26,10 @@ from figure_contracts_v2 import normalize_figure_decisions, normalize_figure_man
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
     source = command.add_mutually_exclusive_group(required=True)
-    source.add_argument("--input", help="Title, DOI, URL, arXiv id, or local main PDF.")
+    source.add_argument(
+        "--input",
+        help="Local main PDF, DOI, arXiv id, unique title, or DOI/arXiv/direct-PDF URL.",
+    )
     source.add_argument(
         "--input-record",
         help="Explicit JSON with title, main_pdf/documents, and supplement_pdfs.",
@@ -33,7 +38,11 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--workdir", default=".local/deeppapernote/runs")
     command.add_argument("--vault-root", default="")
     command.add_argument("--supplement", action="append", default=[])
-    command.add_argument("--offline", action="store_true")
+    command.add_argument(
+        "--offline",
+        action="store_true",
+        help="Require local documents and disable metadata queries and URL downloads.",
+    )
     command.add_argument("--max-pages", type=int, default=0, help="0 means all pages.")
     return command
 
@@ -41,8 +50,14 @@ def parser() -> argparse.ArgumentParser:
 def validate_environment(args: argparse.Namespace) -> None:
     if sys.version_info < (3, 10):
         raise SystemExit("DeepPaperNote requires Python 3.10 or newer")
+    if sys.flags.utf8_mode != 1:
+        raise SystemExit("DeepPaperNote requires Python UTF-8 mode (PYTHONUTF8=1)")
     if importlib.util.find_spec("fitz") is None:
         raise SystemExit("PyMuPDF/fitz is required before starting a run")
+    try:
+        importlib.import_module("fitz")
+    except Exception as exc:
+        raise SystemExit(f"PyMuPDF/fitz cannot be imported: {exc}") from exc
     if args.max_pages < 0:
         raise SystemExit("--max-pages must be non-negative")
     if args.vault_root:
@@ -96,7 +111,7 @@ def write_plan_template(bundle: dict[str, Any], output: Path) -> None:
 def main() -> None:
     args = parser().parse_args()
     validate_environment(args)
-    run_id = args.run_id or utc_run_id()
+    run_id = validate_run_id(args.run_id or utc_run_id())
     run_dir = Path(args.workdir).expanduser().resolve() / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     scripts = Path(__file__).resolve().parent
@@ -117,8 +132,10 @@ def main() -> None:
         if args.input_record:
             command = [
                 python,
-                str(scripts / "create_paper_record_v2.py"),
-                "--input-record",
+                str(scripts / "paper_record_v2.py"),
+                "--stage",
+                "explicit",
+                "--input",
                 args.input_record,
                 "--run-id",
                 run_id,
@@ -134,23 +151,22 @@ def main() -> None:
         else:
             resolved = run_dir / "paper_record.resolved.json"
             metadata = run_dir / "paper_record.metadata.json"
-            run(
-                [
-                    python,
-                    str(scripts / "paper_record_v2.py"),
-                    "--stage",
-                    "resolve",
-                    "--input",
-                    str(args.input),
-                    "--run-id",
-                    run_id,
-                    "--output",
-                    str(resolved),
-                    *(["--vault-root", args.vault_root] if args.vault_root else []),
-                ],
-                stage="resolve_paper",
-                log=log,
-            )
+            resolve_command = [
+                python,
+                str(scripts / "paper_record_v2.py"),
+                "--stage",
+                "resolve",
+                "--input",
+                str(args.input),
+                "--run-id",
+                run_id,
+                "--output",
+                str(resolved),
+                *(["--vault-root", args.vault_root] if args.vault_root else []),
+            ]
+            if args.offline:
+                resolve_command.append("--offline")
+            run(resolve_command, stage="resolve_paper", log=log)
             metadata_command = [
                 python,
                 str(scripts / "paper_record_v2.py"),
@@ -180,6 +196,8 @@ def main() -> None:
                 fetch_command.extend(["--supplement", supplement])
             if args.vault_root:
                 fetch_command.extend(["--vault-root", args.vault_root])
+            if args.offline:
+                fetch_command.append("--offline")
             run(fetch_command, stage="fetch_pdf", log=log)
             require_pass(paths["paper_record"], artifact_type="paper_record")
 
@@ -277,8 +295,6 @@ def main() -> None:
                     "figure_contact_sheet",
                     "figure_visual_review",
                     "publish_note_v2",
-                    "rebuild_paper_navigation",
-                    "lint_vault",
                 ],
                 "artifacts": {
                     key: str(value) for key, value in paths.items() if key != "run_manifest"

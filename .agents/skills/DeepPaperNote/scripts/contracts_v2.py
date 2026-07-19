@@ -13,6 +13,15 @@ from typing import Any, Iterable
 SCHEMA_VERSION = "2.0"
 ARTIFACT_STATUSES = {"pass", "degraded", "fail"}
 DOCUMENT_ROLES = {"main", "supplement"}
+RUN_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
+WINDOWS_RESERVED_BASENAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
 PAPER_TYPES = {
     "experimental_physics",
     "theoretical_physics",
@@ -24,6 +33,17 @@ PAPER_TYPES = {
     "survey",
     "generic",
 }
+PROFILE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    "experimental_physics": ("problem", "protocol", "results"),
+    "theoretical_physics": ("problem", "theory", "results"),
+    "materials_fabrication": ("problem", "fabrication", "results"),
+    "ai_method": ("problem", "protocol", "results"),
+    "benchmark": ("problem", "data", "results"),
+    "clinical": ("problem", "data", "protocol", "results"),
+    "humanities": ("problem", "protocol", "results"),
+    "survey": ("problem", "results"),
+    "generic": ("problem", "protocol", "results"),
+}
 
 
 class ContractError(ValueError):
@@ -31,7 +51,7 @@ class ContractError(ValueError):
 
 
 def utc_run_id(prefix: str = "run") -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dt%H%M%Sz")
     return f"{prefix}-{stamp}"
 
 
@@ -51,9 +71,42 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def canonical_json_sha256(value: Any) -> str:
+    try:
+        rendered = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"Value is not canonical-JSON serializable: {exc}") from exc
+    return sha256_text(rendered)
+
+
 def stable_id(prefix: str, *parts: object, length: int = 16) -> str:
     raw = "\x1f".join(str(part) for part in parts)
     return f"{prefix}:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:length]}"
+
+
+def validate_run_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise ContractError("run_id must be a string")
+    run_id = value
+    windows_basename = run_id.split(".", 1)[0].casefold()
+    if (
+        run_id in {".", ".."}
+        or len(run_id) > 128
+        or run_id.endswith(".")
+        or windows_basename in WINDOWS_RESERVED_BASENAMES
+        or RUN_ID_RE.fullmatch(run_id) is None
+    ):
+        raise ContractError(
+            "run_id must be a lowercase, non-reserved safe basename of at most 128 "
+            "characters matching [a-z0-9][a-z0-9._-]*"
+        )
+    return run_id
 
 
 def load_json_object(value: str | Path | dict[str, Any]) -> dict[str, Any]:
@@ -91,17 +144,19 @@ def artifact_header(
         raise ContractError("artifact_type must not be empty")
     if not paper_id.strip():
         raise ContractError("paper_id must not be empty")
-    if not run_id.strip():
-        raise ContractError("run_id must not be empty")
+    run_id = validate_run_id(run_id)
     if status not in ARTIFACT_STATUSES:
         raise ContractError(f"Invalid status: {status}")
+    normalized_failures = [str(item) for item in failures if str(item).strip()]
+    if status == "pass" and normalized_failures:
+        raise ContractError("Passing artifacts must have an empty failures list")
     return {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": artifact_type,
         "paper_id": paper_id,
         "run_id": run_id,
         "status": status,
-        "failures": [str(item) for item in failures if str(item).strip()],
+        "failures": normalized_failures,
     }
 
 
@@ -124,8 +179,7 @@ def require_v2_artifact(
             raise ContractError(f"Expected artifact_type {sorted(expected)}, got {actual_type!r}")
     if not str(artifact.get("paper_id", "")).strip():
         raise ContractError("Missing paper_id")
-    if not str(artifact.get("run_id", "")).strip():
-        raise ContractError("Missing run_id")
+    validate_run_id(artifact.get("run_id", ""))
     status = str(artifact.get("status", ""))
     if status not in ARTIFACT_STATUSES:
         raise ContractError(f"Invalid artifact status: {status!r}")
@@ -134,6 +188,8 @@ def require_v2_artifact(
     failures = artifact.get("failures")
     if not isinstance(failures, list):
         raise ContractError("failures must be a list")
+    if status == "pass" and failures:
+        raise ContractError("Passing artifacts must have an empty failures list")
     return artifact
 
 
@@ -156,6 +212,8 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
     missing = [key for key in required if key not in document]
     if missing:
         raise ContractError(f"Document missing fields: {', '.join(missing)}")
+    if not str(document["document_id"]).strip():
+        raise ContractError("Document document_id must not be empty")
     if document["role"] not in DOCUMENT_ROLES:
         raise ContractError(f"Invalid document role: {document['role']!r}")
     if not re.fullmatch(r"[0-9a-f]{64}", str(document["sha256"])):
@@ -186,9 +244,266 @@ def validate_paper_record_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(document, dict):
             raise ContractError("Each document must be an object")
         validate_document(document)
+    document_ids = [str(document["document_id"]) for document in documents]
+    if len(document_ids) != len(set(document_ids)):
+        raise ContractError("paper_record document_id values must be unique")
     main_count = sum(1 for document in documents if document.get("role") == "main")
     if main_count > 1:
         raise ContractError("paper_record may contain at most one main document")
+    return artifact
+
+
+def _string_list(value: Any, *, path: str, allow_empty: bool = True) -> list[str]:
+    if not isinstance(value, list):
+        raise ContractError(f"{path} must be a list")
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        raise ContractError(f"{path} must contain only non-empty strings")
+    normalized = [item.strip() for item in value]
+    if len(normalized) != len(set(normalized)):
+        raise ContractError(f"{path} must not contain duplicates")
+    if not allow_empty and not normalized:
+        raise ContractError(f"{path} must not be empty")
+    return normalized
+
+
+def _evidence_units(value: Any, *, strict: bool) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ContractError("evidence_units must be a list")
+    if not value:
+        raise ContractError("evidence_units must not be empty")
+    units: list[dict[str, Any]] = []
+    evidence_ids: list[str] = []
+    for index, unit in enumerate(value):
+        path = f"evidence_units[{index}]"
+        if not isinstance(unit, dict):
+            raise ContractError(f"{path} must be an object")
+        raw_evidence_id = unit.get("evidence_id")
+        if not isinstance(raw_evidence_id, str) or not raw_evidence_id.strip():
+            raise ContractError(f"{path}.evidence_id must not be empty")
+        evidence_id = raw_evidence_id.strip()
+        evidence_ids.append(evidence_id)
+        if strict:
+            if not isinstance(unit.get("document_id"), str) or not unit["document_id"].strip():
+                raise ContractError(f"{path}.document_id must not be empty")
+            if unit.get("document_role") not in DOCUMENT_ROLES:
+                raise ContractError(f"{path}.document_role is invalid")
+            page = unit.get("page")
+            if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+                raise ContractError(f"{path}.page must be a positive integer")
+            if not isinstance(unit.get("section"), str) or not unit["section"].strip():
+                raise ContractError(f"{path}.section must not be empty")
+            _string_list(unit.get("types"), path=f"{path}.types", allow_empty=False)
+            if not isinstance(unit.get("text"), str) or not unit["text"].strip():
+                raise ContractError(f"{path}.text must not be empty")
+            for refs_field in ("figure_refs", "table_refs", "equation_refs"):
+                if refs_field in unit:
+                    _string_list(unit[refs_field], path=f"{path}.{refs_field}")
+        units.append(unit)
+    if len(evidence_ids) != len(set(evidence_ids)):
+        raise ContractError("evidence_id values must be unique")
+    return units
+
+
+def evidence_units_sha256(context_or_units: dict[str, Any] | list[Any]) -> str:
+    units_value = (
+        context_or_units.get("evidence_units")
+        if isinstance(context_or_units, dict)
+        else context_or_units
+    )
+    units = _evidence_units(units_value, strict=False)
+    ordered = sorted(units, key=lambda item: str(item["evidence_id"]))
+    return canonical_json_sha256(ordered)
+
+
+def _document_index(documents: Any, *, path: str) -> dict[str, dict[str, Any]]:
+    if not isinstance(documents, list) or not documents:
+        raise ContractError(f"{path} must be a non-empty list")
+    result: dict[str, dict[str, Any]] = {}
+    for index, document in enumerate(documents):
+        if not isinstance(document, dict):
+            raise ContractError(f"{path}[{index}] must be an object")
+        validate_document(document)
+        document_id = str(document["document_id"])
+        if document_id in result:
+            raise ContractError(f"{path} contains duplicate document_id {document_id!r}")
+        result[document_id] = document
+    return result
+
+
+def validate_evidence_pack_artifact(
+    artifact: dict[str, Any],
+    *,
+    paper_record_artifact: dict[str, Any] | None = None,
+    verify_files: bool = False,
+) -> dict[str, Any]:
+    require_v2_artifact(artifact, artifact_type="evidence_pack", allow_statuses={"pass"})
+    pack = artifact.get("evidence_pack")
+    if not isinstance(pack, dict):
+        raise ContractError("evidence_pack object is required")
+    if pack.get("paper_id") != artifact.get("paper_id"):
+        raise ContractError("evidence_pack.paper_id must match artifact paper_id")
+    if pack.get("paper_type") not in PAPER_TYPES:
+        raise ContractError("evidence_pack.paper_type is invalid")
+    if pack.get("evidence_quality") != "high":
+        raise ContractError("Passing evidence_pack must have evidence_quality 'high'")
+
+    pack_documents = _document_index(pack.get("documents"), path="evidence_pack.documents")
+    main_count = sum(1 for item in pack_documents.values() if item["role"] == "main")
+    if main_count != 1:
+        raise ContractError("Passing evidence_pack must contain exactly one main document")
+    for document_id, document in pack_documents.items():
+        if document["pages"] < 1:
+            raise ContractError(f"Document {document_id!r} must contain at least one page")
+
+    source_documents = pack_documents
+    if paper_record_artifact is not None:
+        require_v2_artifact(
+            paper_record_artifact,
+            artifact_type="paper_record",
+            allow_statuses={"pass"},
+        )
+        validate_paper_record_artifact(paper_record_artifact)
+        require_same_identity(paper_record_artifact, artifact)
+        source_documents = _document_index(
+            paper_record_artifact["paper_record"].get("documents"),
+            path="paper_record.documents",
+        )
+        if set(source_documents) != set(pack_documents):
+            raise ContractError("evidence_pack documents do not match paper_record documents")
+        for document_id, source in source_documents.items():
+            packed = pack_documents[document_id]
+            for field in ("role", "sha256", "pages"):
+                if packed.get(field) != source.get(field):
+                    raise ContractError(
+                        f"evidence_pack document identity mismatch: {document_id}:{field}"
+                    )
+
+    if verify_files:
+        try:
+            import fitz
+        except ImportError as exc:  # pragma: no cover - environment gate covers this
+            raise ContractError("PyMuPDF/fitz is required to verify evidence documents") from exc
+        for document_id, document in source_documents.items():
+            raw_path = str(document.get("path", "")).strip()
+            if not raw_path:
+                raise ContractError(
+                    f"Document local PDF path is required for publication: {document_id}"
+                )
+            file_path = Path(raw_path).expanduser().resolve()
+            if not file_path.is_file():
+                raise ContractError(f"Document file is missing: {document_id}")
+            if file_path.suffix.casefold() != ".pdf":
+                raise ContractError(f"Document is not a PDF path: {document_id}")
+            before_sha = sha256_file(file_path)
+            if before_sha != document["sha256"]:
+                raise ContractError(f"Document sha256 mismatch: {document_id}")
+            try:
+                pdf = fitz.open(file_path)
+                try:
+                    actual_pages = len(pdf)
+                finally:
+                    pdf.close()
+            except Exception as exc:
+                raise ContractError(f"Document PDF cannot be parsed: {document_id}: {exc}") from exc
+            after_sha = sha256_file(file_path)
+            if after_sha != before_sha or after_sha != document["sha256"]:
+                raise ContractError(f"Document changed during verification: {document_id}")
+            if actual_pages != document["pages"]:
+                raise ContractError(
+                    f"Document page count mismatch: {document_id}:"
+                    f"expected={document['pages']}:actual={actual_pages}"
+                )
+
+    extraction_failures = pack.get("extraction_failures")
+    if not isinstance(extraction_failures, list) or extraction_failures:
+        raise ContractError("Passing evidence_pack must have empty extraction_failures")
+
+    units = _evidence_units(pack.get("evidence_units"), strict=True)
+    actual_types: set[str] = set()
+    for index, unit in enumerate(units):
+        document_id = str(unit["document_id"])
+        document = pack_documents.get(document_id)
+        if document is None:
+            raise ContractError(f"evidence_units[{index}] refers to an unknown document")
+        if unit["document_role"] != document["role"]:
+            raise ContractError(f"evidence_units[{index}] document_role mismatch")
+        if unit["page"] > document["pages"]:
+            raise ContractError(f"evidence_units[{index}] page is outside the document")
+        actual_types.update(str(item) for item in unit["types"])
+
+    page_records = pack.get("page_records")
+    if not isinstance(page_records, list):
+        raise ContractError("evidence_pack.page_records must be a list")
+    expected_pages = {
+        (document_id, page)
+        for document_id, document in pack_documents.items()
+        for page in range(1, int(document["pages"]) + 1)
+    }
+    actual_pages: set[tuple[str, int]] = set()
+    actual_text_pages = 0
+    text_pages_by_document = {document_id: 0 for document_id in pack_documents}
+    for index, page_record in enumerate(page_records):
+        path = f"evidence_pack.page_records[{index}]"
+        if not isinstance(page_record, dict):
+            raise ContractError(f"{path} must be an object")
+        document_id = str(page_record.get("document_id", ""))
+        document = pack_documents.get(document_id)
+        page = page_record.get("page")
+        if document is None or not isinstance(page, int) or isinstance(page, bool):
+            raise ContractError(f"{path} has an invalid document/page")
+        if page_record.get("document_role") != document["role"]:
+            raise ContractError(f"{path}.document_role mismatch")
+        text_chars = page_record.get("text_chars")
+        if not isinstance(text_chars, int) or isinstance(text_chars, bool) or text_chars < 0:
+            raise ContractError(f"{path}.text_chars must be a non-negative integer")
+        key = (document_id, page)
+        if key in actual_pages:
+            raise ContractError(f"Duplicate page record: {document_id} p. {page}")
+        actual_pages.add(key)
+        if text_chars >= 80:
+            actual_text_pages += 1
+            text_pages_by_document[document_id] += 1
+    if actual_pages != expected_pages:
+        raise ContractError("page_records do not cover every document page exactly once")
+
+    coverage = pack.get("coverage")
+    if not isinstance(coverage, dict):
+        raise ContractError("evidence_pack.coverage must be an object")
+    required = _string_list(
+        coverage.get("required"), path="evidence_pack.coverage.required", allow_empty=False
+    )
+    expected_required = list(PROFILE_REQUIREMENTS[str(pack["paper_type"])])
+    if required != expected_required:
+        raise ContractError(
+            "coverage.required does not match the requirements for evidence_pack.paper_type"
+        )
+    available = _string_list(
+        coverage.get("available"), path="evidence_pack.coverage.available", allow_empty=False
+    )
+    missing = _string_list(coverage.get("missing"), path="evidence_pack.coverage.missing")
+    if set(available) != actual_types:
+        raise ContractError("coverage.available does not match evidence unit types")
+    expected_missing = {item for item in required if item not in set(available)}
+    if set(missing) != expected_missing:
+        raise ContractError("coverage.missing is inconsistent with required/available")
+    if missing:
+        raise ContractError("Passing evidence_pack must not have missing coverage")
+    ratio = coverage.get("ratio")
+    if not isinstance(ratio, (int, float)) or isinstance(ratio, bool) or float(ratio) != 1.0:
+        raise ContractError("Passing evidence_pack coverage ratio must be 1.0")
+    if coverage.get("total_pages") != len(expected_pages):
+        raise ContractError("coverage.total_pages does not match the document pages")
+    if coverage.get("text_pages") != actual_text_pages:
+        raise ContractError("coverage.text_pages does not match page_records")
+    if coverage.get("needs_ocr") is not False:
+        raise ContractError("Passing evidence_pack must not need OCR")
+    if actual_text_pages / len(expected_pages) < 0.6:
+        raise ContractError("Passing evidence_pack text coverage is below 60 percent")
+    for document_id, document in pack_documents.items():
+        if text_pages_by_document[document_id] / int(document["pages"]) < 0.6:
+            raise ContractError(
+                f"Passing evidence_pack text coverage is below 60 percent for {document_id}"
+            )
     return artifact
 
 
@@ -319,7 +634,13 @@ READABILITY_SCORE_FIELDS = (
 REVIEW_ORIGINS = {"subagent", "human"}
 
 
-def validate_review_artifact(artifact: dict[str, Any], *, kind: str) -> dict[str, Any]:
+def validate_review_artifact(
+    artifact: dict[str, Any],
+    *,
+    kind: str,
+    context: dict[str, Any] | None = None,
+    lint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if kind not in {"quality", "readability"}:
         raise ContractError(f"Unknown review kind: {kind}")
     expected_type = f"{kind}_review"
@@ -327,6 +648,32 @@ def validate_review_artifact(artifact: dict[str, Any], *, kind: str) -> dict[str
     review = artifact.get("review")
     if not isinstance(review, dict):
         raise ContractError("review object is required")
+    if context is None:
+        raise ContractError("A synthesis_bundle context is required to validate a review")
+    require_v2_artifact(
+        context,
+        artifact_type="synthesis_bundle",
+        allow_statuses={"pass"},
+    )
+    require_same_identity(artifact, context)
+    known_evidence_ids = {
+        str(unit["evidence_id"])
+        for unit in _evidence_units(context.get("evidence_units"), strict=False)
+    }
+    expected_evidence_hash = evidence_units_sha256(context)
+    actual_evidence_hash = str(artifact.get("evidence_units_sha256", ""))
+    if not re.fullmatch(r"[0-9a-f]{64}", actual_evidence_hash):
+        raise ContractError("Review must contain a valid evidence_units_sha256")
+    if actual_evidence_hash != expected_evidence_hash:
+        raise ContractError("Review evidence_units_sha256 does not match synthesis context")
+    expected_synthesis_hash = canonical_json_sha256(context)
+    actual_synthesis_hash = str(artifact.get("synthesis_bundle_sha256", ""))
+    if not re.fullmatch(r"[0-9a-f]{64}", actual_synthesis_hash):
+        raise ContractError("Review must contain a valid synthesis_bundle_sha256")
+    if actual_synthesis_hash != expected_synthesis_hash:
+        raise ContractError(
+            "Review synthesis_bundle_sha256 does not match synthesis context"
+        )
 
     author = str(artifact.get("author", "")).strip()
     reviewer = str(artifact.get("reviewer", "")).strip()
@@ -364,6 +711,40 @@ def validate_review_artifact(artifact: dict[str, Any], *, kind: str) -> dict[str
     note_sha = str(artifact.get("note_sha256", ""))
     if not re.fullmatch(r"[0-9a-f]{64}", note_sha):
         raise ContractError("Review must contain a valid note_sha256")
+    if kind == "readability":
+        if lint is None:
+            raise ContractError("A passing lint report is required to validate readability")
+        require_v2_artifact(lint, artifact_type="lint_report", allow_statuses={"pass"})
+        require_same_identity(artifact, lint)
+        lint_note_sha = str(lint.get("note_sha256", ""))
+        if not re.fullmatch(r"[0-9a-f]{64}", lint_note_sha):
+            raise ContractError("Lint report must contain a valid note_sha256")
+        if artifact.get("lint_note_sha256") != lint_note_sha or note_sha != lint_note_sha:
+            raise ContractError("Readability review does not match the passing lint report")
+    if kind == "quality":
+        checked = review.get("claims_checked")
+        if not isinstance(checked, list) or len(checked) < 3:
+            raise ContractError("Passing quality review must check at least three claims")
+        normalized_claims: list[str] = []
+        for index, claim in enumerate(checked):
+            path = f"review.claims_checked[{index}]"
+            if not isinstance(claim, dict):
+                raise ContractError(f"{path} must be an object")
+            if not str(claim.get("claim", "")).strip():
+                raise ContractError(f"{path}.claim must not be empty")
+            normalized_claims.append(" ".join(str(claim["claim"]).split()).casefold())
+            evidence_ids = _string_list(
+                claim.get("evidence_ids"),
+                path=f"{path}.evidence_ids",
+                allow_empty=False,
+            )
+            unknown = sorted(set(evidence_ids) - known_evidence_ids)
+            if unknown:
+                raise ContractError(
+                    f"{path} contains unknown evidence IDs: {', '.join(unknown)}"
+                )
+        if len(normalized_claims) != len(set(normalized_claims)):
+            raise ContractError("Passing quality review must check distinct claims")
     return artifact
 
 

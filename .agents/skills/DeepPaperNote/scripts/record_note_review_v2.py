@@ -12,7 +12,9 @@ from contracts_v2 import (
     READABILITY_SCORE_FIELDS,
     ContractError,
     artifact_header,
+    canonical_json_sha256,
     emit_json,
+    evidence_units_sha256,
     load_json_object,
     require_note_hash,
     require_same_identity,
@@ -58,7 +60,13 @@ def build_review_artifact(
     context: dict[str, Any],
     lint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    require_v2_artifact(context, artifact_type="synthesis_bundle")
+    require_v2_artifact(
+        context,
+        artifact_type="synthesis_bundle",
+        allow_statuses={"pass"},
+    )
+    evidence_hash = evidence_units_sha256(context)
+    synthesis_hash = canonical_json_sha256(context)
     if kind == "readability":
         if lint is None:
             raise ContractError("A passing lint report is required before readability review")
@@ -103,17 +111,32 @@ def build_review_artifact(
                 for item in context.get("evidence_units", [])
                 if isinstance(item, dict) and item.get("evidence_id")
             }
+            normalized_claims: list[str] = []
             for index, claim in enumerate(checked, start=1):
                 if not isinstance(claim, dict):
                     failures.append(f"claim_check_not_object:{index}")
                     continue
+                if not str(claim.get("claim", "")).strip():
+                    failures.append(f"claim_check_missing_claim:{index}")
+                else:
+                    normalized_claims.append(
+                        " ".join(str(claim["claim"]).split()).casefold()
+                    )
                 ids = claim.get("evidence_ids", [])
                 if not isinstance(ids, list) or not ids:
                     failures.append(f"claim_check_missing_evidence:{index}")
                     continue
-                unknown = [str(item) for item in ids if str(item) not in known_ids]
+                if any(not isinstance(item, str) or not item.strip() for item in ids):
+                    failures.append(f"claim_check_invalid_evidence:{index}")
+                    continue
+                normalized_ids = [item.strip() for item in ids]
+                if len(normalized_ids) != len(set(normalized_ids)):
+                    failures.append(f"claim_check_duplicate_evidence:{index}")
+                unknown = [item for item in normalized_ids if item not in known_ids]
                 if unknown:
                     failures.append(f"claim_check_unknown_evidence:{index}:{','.join(unknown)}")
+            if len(normalized_claims) != len(set(normalized_claims)):
+                failures.append("claim_checks_not_distinct")
 
     status = "pass" if not failures else "fail"
     artifact = artifact_header(
@@ -124,6 +147,8 @@ def build_review_artifact(
         failures=failures,
     )
     artifact["note_sha256"] = sha256_text(note_text)
+    artifact["evidence_units_sha256"] = evidence_hash
+    artifact["synthesis_bundle_sha256"] = synthesis_hash
     artifact["author"] = normalized_author
     artifact["reviewer"] = reviewer
     artifact["review_origin"] = review_origin
@@ -131,7 +156,7 @@ def build_review_artifact(
     if lint is not None:
         artifact["lint_note_sha256"] = lint.get("note_sha256", "")
     if status == "pass":
-        validate_review_artifact(artifact, kind=kind)
+        validate_review_artifact(artifact, kind=kind, context=context, lint=lint)
     return artifact
 
 

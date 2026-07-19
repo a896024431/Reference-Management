@@ -13,6 +13,7 @@ import fitz
 from contracts_v2 import (
     ContractError,
     artifact_header,
+    canonical_json_sha256,
     emit_json,
     load_json_object,
     require_same_identity,
@@ -23,7 +24,6 @@ from figure_contracts_v2 import (
     normalize_figure_manifest,
     sha256_file,
 )
-from figure_visual_review_contracts_v2 import canonical_json_sha256
 
 PAGE_WIDTH = 1600
 PAGE_HEIGHT = 1800

@@ -21,8 +21,9 @@ from contracts_v2 import (
     require_v2_artifact,
 )
 from extract_pdf_assets_v2 import _parse_caption_start
-from figure_contracts import FIGURE_SCHEMA_VERSION, ensure_asset_identity
 from figure_contracts_v2 import (
+    ensure_asset_identity,
+    make_figure_decisions,
     normalize_figure_decisions,
     normalize_figure_label,
     normalize_figure_manifest,
@@ -428,14 +429,12 @@ def build_figure_decisions(
                 else "no_visually_usable_matching_asset",
             }
         )
-    return {
-        "schema_version": FIGURE_SCHEMA_VERSION,
-        "paper_id": paper_id,
-        "run_id": run_id,
-        "status": "ok",
-        "failures": [],
-        "decisions": decisions,
-    }
+    return make_figure_decisions(
+        paper_id=paper_id,
+        run_id=run_id,
+        decisions=decisions,
+        status="pass",
+    )
 
 
 def _bridge_identity(
@@ -616,7 +615,7 @@ def build_release_figure_plan_artifact(
         for item in raw_decisions.get("decisions", [])
         if isinstance(item, dict)
     )
-    raw_decisions["status"] = "degraded" if has_pending else "ok"
+    raw_decisions["status"] = "degraded" if has_pending else "pass"
     decisions = normalize_figure_decisions(raw_decisions, manifest=manifest, require_final=False)
     status = "degraded" if has_pending else "pass"
     artifact = artifact_header("figure_plan", paper_id=paper_id, run_id=run_id, status=status)

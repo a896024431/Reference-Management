@@ -3,17 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from figure_contracts import (
+from contracts_v2 import ContractError, artifact_header
+from figure_contracts_v2 import (
     FigureContractError,
     build_figure_asset_identity,
     figure_note_alignment_issues,
+    make_figure_decisions,
+    make_figure_manifest,
     materialize_decision,
-    render_figure_decision_block,
+    normalize_figure_decisions,
+    normalize_figure_manifest,
     sha256_bytes,
     validate_figure_decisions,
     validate_figure_manifest,
 )
-from figure_contracts_v2 import normalize_figure_decisions
+from publish_note_v2 import validate_figure_sources
 
 
 def _asset(source: Path, *, quality: str = "usable") -> dict:
@@ -50,13 +54,10 @@ def _asset(source: Path, *, quality: str = "usable") -> dict:
 
 
 def _decisions(asset_id: str, *, outcome: str = "inserted") -> dict:
-    return {
-        "schema_version": "2.0",
-        "paper_id": "paper-test",
-        "run_id": "run-test",
-        "status": "ok",
-        "failures": [],
-        "decisions": [
+    return make_figure_decisions(
+        paper_id="paper-test",
+        run_id="run-test",
+        decisions=[
             {
                 "target_id": "main|fig 2",
                 "display_label": "Fig. 2",
@@ -68,18 +69,15 @@ def _decisions(asset_id: str, *, outcome: str = "inserted") -> dict:
                 "rejected_asset_ids": [],
             }
         ],
-    }
+    )
 
 
 def _manifest(asset: dict) -> dict:
-    return {
-        "schema_version": "2.0",
-        "paper_id": "paper-test",
-        "run_id": "run-test",
-        "status": "ok",
-        "failures": [],
-        "assets": [asset],
-    }
+    return make_figure_manifest(
+        paper_id="paper-test",
+        run_id="run-test",
+        assets=[asset],
+    )
 
 
 def test_manifest_to_materialize_round_trip_is_hash_verified(tmp_path: Path) -> None:
@@ -107,6 +105,56 @@ def test_manifest_to_materialize_round_trip_is_hash_verified(tmp_path: Path) -> 
     assert copied.read_bytes() == source.read_bytes()
     note = f"![[Research/Test/images/{asset['filename']}]]"
     assert figure_note_alignment_issues(note, decisions, materialized=materialized) == []
+
+
+def test_manifest_identity_and_paper_document_provenance_are_recomputed(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "candidate.png"
+    source.write_bytes(b"deterministic-png-fixture")
+    asset = _asset(source)
+    drifted = dict(asset)
+    drifted["document_id"] = "ghost"
+    drifted["page_number"] = 999
+
+    normalized = normalize_figure_manifest(_manifest(drifted))
+    assert normalized["status"] == "fail"
+    assert any("asset_id_identity_mismatch" in failure for failure in normalized["failures"])
+
+    record = artifact_header("paper_record", paper_id="paper-test", run_id="run-test")
+    record["paper_record"] = {
+        "paper_id": "paper-test",
+        "metadata": {"title": "Paper Test"},
+        "documents": [
+            {
+                "document_id": "main",
+                "role": "main",
+                "path": str(tmp_path / "paper.pdf"),
+                "sha256": "0" * 64,
+                "pages": 3,
+            }
+        ],
+    }
+    validate_figure_sources(_manifest(asset), record)
+
+    page_four = dict(asset)
+    page_four_id, page_four_filename, page_four_bbox_hash = build_figure_asset_identity(
+        document_id="main",
+        page_number=4,
+        label=page_four["label"],
+        bbox=page_four["bbox_pt"],
+        content_sha256=page_four["file_sha256"],
+    )
+    page_four.update(
+        {
+            "asset_id": page_four_id,
+            "filename": page_four_filename,
+            "bbox_sha256": page_four_bbox_hash,
+            "page_number": 4,
+        }
+    )
+    with pytest.raises(ContractError, match="page is outside"):
+        validate_figure_sources(_manifest(page_four), record)
 
 
 def test_materialization_rejects_manifest_hash_drift(tmp_path: Path) -> None:
@@ -160,22 +208,6 @@ def test_duplicate_labels_receive_distinct_ids_and_filenames() -> None:
     assert first[1] != second[1]
 
 
-def test_figure_rendering_keeps_planning_metadata_out_of_notes(tmp_path: Path) -> None:
-    source = tmp_path / "candidate.png"
-    source.write_bytes(b"deterministic-png-fixture")
-    asset = _asset(source)
-    inserted = _decisions(asset["asset_id"])
-
-    rendered = render_figure_decision_block(inserted["decisions"][0], embed="![[images/fig-2.png]]")
-
-    assert rendered.startswith("![[images/fig-2.png]]")
-    assert "[!figure]" not in rendered
-    assert "建议位置" not in rendered
-    assert "放置原因" not in rendered
-    assert "当前状态" not in rendered
-    assert "图号身份" not in rendered
-
-
 def test_placeholder_decision_is_run_only_and_needs_no_visible_callout(tmp_path: Path) -> None:
     source = tmp_path / "candidate.png"
     source.write_bytes(b"deterministic-png-fixture")
@@ -183,7 +215,6 @@ def test_placeholder_decision_is_run_only_and_needs_no_visible_callout(tmp_path:
     placeholder = _decisions(asset["asset_id"], outcome="placeholder")
     note = "正文自然引用 Fig. 2 来说明器件几何。"
 
-    assert render_figure_decision_block(placeholder["decisions"][0]) == ""
     assert figure_note_alignment_issues(note, placeholder) == []
 
 
@@ -191,9 +222,10 @@ def _planner_record(*, reason: str, outcome: str = "placeholder") -> dict:
     return {
         "figure_decisions": {
             "schema_version": "2.0",
+            "artifact_type": "figure_decisions",
             "paper_id": "paper-test",
             "run_id": "run-test",
-            "status": "ok",
+            "status": "pass",
             "failures": [],
             "decisions": [
                 {
@@ -236,3 +268,72 @@ def test_explicit_omission_with_reason_is_a_valid_final_decision() -> None:
         require_final=True,
     )
     assert artifact["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../escape.png",
+        "nested/escape.png",
+        r"nested\escape.png",
+        "fig..png",
+        "figure.exe",
+    ],
+)
+def test_manifest_rejects_unsafe_or_unsupported_filenames(
+    tmp_path: Path, filename: str
+) -> None:
+    source = tmp_path / "candidate.png"
+    source.write_bytes(b"deterministic-png-fixture")
+    asset = _asset(source)
+    asset["filename"] = filename
+    manifest = _manifest(asset)
+
+    issues = validate_figure_manifest(manifest, verify_files=True)
+
+    assert any("filename_" in issue for issue in issues)
+    with pytest.raises(FigureContractError, match="filename"):
+        materialize_decision(
+            manifest=manifest,
+            decisions=_decisions(asset["asset_id"]),
+            target_id="main|fig 2",
+            destination_dir=tmp_path / "note" / "images",
+        )
+    assert not (tmp_path / "note" / "escape.png").exists()
+
+
+def test_manifest_rejects_absolute_filename(tmp_path: Path) -> None:
+    source = tmp_path / "candidate.png"
+    source.write_bytes(b"deterministic-png-fixture")
+    asset = _asset(source)
+    asset["filename"] = str((tmp_path / "escape.png").resolve())
+
+    issues = validate_figure_manifest(_manifest(asset), verify_files=True)
+
+    assert "figure_manifest_asset_0_filename_unsafe" in issues
+
+
+def test_asset_identity_rejects_unsupported_extension() -> None:
+    with pytest.raises(FigureContractError, match="Unsupported figure image extension"):
+        build_figure_asset_identity(
+            document_id="main",
+            page_number=1,
+            label="Fig. 1",
+            bbox=[],
+            extension="exe",
+        )
+
+
+@pytest.mark.parametrize("legacy_status", ["ok", "failed"])
+def test_legacy_figure_statuses_are_rejected(legacy_status: str) -> None:
+    manifest = make_figure_manifest(
+        paper_id="paper-test",
+        run_id="run-test",
+        assets=[],
+    )
+    manifest["status"] = legacy_status
+
+    normalized = normalize_figure_manifest(manifest)
+
+    assert normalized["status"] == "fail"
+    assert "figure_manifest_status_invalid" in normalized["failures"]

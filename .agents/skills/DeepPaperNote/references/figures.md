@@ -33,4 +33,4 @@ placeholder 与 omitted 只留在 JSON。没有需要决策的重要视觉时 de
 
 `build_figure_contact_sheet_v2.py` 只使用 manifest 候选，完整写好 PNG 后再替换旧文件；`record_figure_visual_review_v2.py` 记录 manifest、decisions 与 contact sheet 之间的对应关系。
 
-插入的图片必须存在、能够正常打开、文件内容指纹匹配，并且在笔记中有对应 embed。没有被笔记引用的图片和指向不存在图片的链接都会阻止发布。`images/` 中的非图片文件或子目录同样阻止发布。
+插入的图片必须绑定当前 paper record 中存在的 document/page，稳定身份、contact sheet decisions、视觉复核和文件内容指纹都必须匹配，并且在笔记中有对应的 `images/<文件名>` embed。远程、data URI、HTML 图片、未被笔记引用的图片和指向不存在图片的链接都会阻止发布。`images/` 中的非图片文件或子目录同样阻止发布。

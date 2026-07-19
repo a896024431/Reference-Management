@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from figure_contracts import build_figure_asset_identity
+from figure_contracts_v2 import build_figure_asset_identity
 from plan_figures_v2 import attach_candidate_images
 
 
