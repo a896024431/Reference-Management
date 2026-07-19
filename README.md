@@ -55,6 +55,6 @@ conda run --no-capture-output -n deeppapernote python <脚本> ...
 
 ## GitHub 同步
 
-笔记保存并通过校验后，Codex 会询问是否同步；只有用户确认后才执行。具体同步边界和命令以 `AGENTS.md` 为准，PDF、本机状态、密钥、缓存和临时文件不会进入 Git。
+笔记保存并通过校验后，Codex 只提醒同步，不代为暂存、提交或推送。请在 Codex 侧边栏中手动检查改动并依次执行 Pull／Sync、Commit 和 Push。具体同步边界以 `AGENTS.md` 为准，PDF、本机状态、密钥、缓存和临时文件不会进入 Git。
 
 项目维护历史见 [更新报告](更新报告.md)。

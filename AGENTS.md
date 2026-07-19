@@ -1,6 +1,6 @@
 # Codex + Obsidian + DeepPaperNote Vault Guide
 
-本仓库根目录是 Obsidian Vault。项目目标很窄：用仓库内的 DeepPaperNote skill 为单篇论文生成高质量 Markdown 深读笔记，并在用户确认后同步到 GitHub。
+本仓库根目录是 Obsidian Vault。项目目标很窄：用仓库内的 DeepPaperNote skill 为单篇论文生成高质量 Markdown 深读笔记，再由用户在 Codex 侧边栏手动同步到 GitHub。
 
 ## 运行环境
 
@@ -16,7 +16,7 @@
 4. 任一 PDF 缺少可复核的本地文件、解析失败、实际页数不符、全文截断、逐文档 OCR 覆盖不足或关键证据缺失时停止并报告阻塞；不得生成摘要型或降级发布笔记。
 5. 写入 Obsidian 前，必须验证 note plan 中各条目与 evidence ID 的关联并完成 lint。默认由主代理显式调用至少一个不同于作者的新子 agent 完成质量与可读性复核；主代理不得代写复核结果。只有用户明确选择时才改用人工复核，无法获得独立复核时停止。
 6. 发布程序只接受完整证据和 `note_status: polished`，重新绑定论文类型、完整 synthesis、复核、插图来源与最终文件内容，并在同一最终事务中完成导航重建和 Vault lint。
-7. 笔记完成、通过校验并保存后，必须询问用户是否需要同步到 GitHub。用户确认前不得执行 `git add`、`git commit` 或 `git push`。
+7. 笔记完成、通过校验并保存后，只提醒用户在 Codex 侧边栏手动同步到 GitHub。Codex 不执行 `git add`、`git commit` 或 `git push`。
 
 ## 内容与维护边界
 
@@ -58,20 +58,15 @@
 - Obsidian workspace 状态，如 `.obsidian/`
 - 临时输出、Python/Node 缓存和构建生成文件
 
-## 同步流程
+## 用户手动同步
 
-仅在用户确认后执行：
+Codex 完成工作后只执行测试、导航检查、Vault lint、`git diff --check` 和 Git 状态检查，不暂存、不提交、不推送。
 
-```powershell
-git pull --ff-only
-git status --short --ignored
-conda run --no-capture-output -n deeppapernote python .agents/skills/DeepPaperNote/scripts/rebuild_paper_navigation.py --vault . --check
-conda run --no-capture-output -n deeppapernote python .agents/skills/DeepPaperNote/scripts/lint_vault.py --vault .
-git add -- AGENTS.md README.md 更新报告.md .gitignore .gitattributes .agents/skills/DeepPaperNote .github/workflows/deeppapernote-v2.yml Research
-git diff --cached --check
-git status --short
-git commit -m "Update DeepPaperNote vault"
-git push
-```
+用户在 Codex 侧边栏中手动执行：
 
-提交前必须检查暂存内容，确认没有 PDF、密钥、本机配置或临时文件进入 Git。
+1. 先 Pull／Sync，确认远端没有冲突。
+2. 检查改动并只暂存上述允许同步的文件。
+3. Commit，建议提交信息为 `Update DeepPaperNote vault`。
+4. Push。
+
+提交前必须确认没有 PDF、密钥、本机配置或临时文件进入暂存区。

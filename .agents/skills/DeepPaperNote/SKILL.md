@@ -58,4 +58,4 @@ description: Generate an evidence-first Chinese deep-reading note for one paper 
 
 正式目录固定为 `Research/<规范标题>/笔记.md`，有可靠图片时使用同级 `images/`。本地处理记录只写入 `.local/deeppapernote/published/<run_id>/`。永久笔记不得出现候选 ID、裁剪坐标、内容指纹、QA 状态、可见 placeholder、运行时消息或本机绝对路径。
 
-只有发布器返回包含导航指纹和通过状态 Vault lint 的完成凭证后，才说笔记已完成。它先完整准备新内容，再替换旧版本，并在最终检查失败时恢复旧笔记、导航和审计记录。`rebuild_paper_navigation.py --check` 与 `lint_vault.py` 仍可用于独立维护检查。保存后询问用户是否同步 GitHub；确认前不得执行 `git add`、`git commit` 或 `git push`。
+只有发布器返回包含导航指纹和通过状态 Vault lint 的完成凭证后，才说笔记已完成。它先完整准备新内容，再替换旧版本，并在最终检查失败时恢复旧笔记、导航和审计记录。`rebuild_paper_navigation.py --check` 与 `lint_vault.py` 仍可用于独立维护检查。保存后只提醒用户在 Codex 侧边栏手动同步 GitHub；Codex 不执行 `git add`、`git commit` 或 `git push`。
