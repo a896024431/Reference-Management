@@ -9,11 +9,13 @@ from pathlib import Path
 import fitz
 import publish_note_v2
 import pytest
+import run_pipeline_v2
 from contracts_v2 import ContractError, artifact_header, load_json_object, sha256_text
 from publish_note_v2 import (
     _rollback_release_state,
     archive_publish_audit,
     publish_transaction,
+    resolve_publish_target,
     validate_existing_audit_identity,
     validate_operational_paths,
     validate_published_target,
@@ -58,7 +60,7 @@ def _make_pipeline_pdf(path: Path) -> Path:
 
 def _run_pipeline(
     *,
-    input_record: Path,
+    input_pdf: Path,
     workdir: Path,
     vault_root: Path,
     run_id: str,
@@ -68,8 +70,8 @@ def _run_pipeline(
     command = [
         sys.executable,
         str(SCRIPTS / "run_pipeline_v2.py"),
-        "--input-record",
-        str(input_record),
+        "--input",
+        str(input_pdf),
         "--offline",
         "--run-id",
         run_id,
@@ -94,24 +96,17 @@ def _run_pipeline(
 def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
     tmp_path: Path,
 ) -> None:
-    pdf = _make_pipeline_pdf(tmp_path / "paper.pdf")
-    supplement = _make_pipeline_pdf(tmp_path / "supplement.pdf")
-    input_record = tmp_path / "input.json"
-    input_record.write_text(
-        json.dumps(
-            {
-                "title": "Graphene quantum Hall transport experiment",
-                "main_pdf": str(pdf),
-            }
-        ),
-        encoding="utf-8",
-    )
-    workdir = tmp_path / "runs"
+    vault = tmp_path / "vault"
+    paper_dir = vault / "文献" / "QPC" / "Graphene quantum Hall transport experiment"
+    paper_dir.mkdir(parents=True)
+    pdf = _make_pipeline_pdf(paper_dir / "paper.pdf")
+    supplement = _make_pipeline_pdf(paper_dir / "supplement.pdf")
+    workdir = vault / ".local" / "deeppapernote" / "runs"
 
     passed = _run_pipeline(
-        input_record=input_record,
+        input_pdf=pdf,
         workdir=workdir,
-        vault_root=tmp_path,
+        vault_root=vault,
         run_id="integration-pass",
         max_pages=0,
         supplements=[supplement],
@@ -147,14 +142,14 @@ def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
     documents = load_json_object(passed_dir / "paper_record.json")["paper_record"]["documents"]
     assert [document["role"] for document in documents] == ["main", "supplement"]
     assert [document["vault_path"] for document in documents] == [
-        "paper.pdf",
-        "supplement.pdf",
+        "文献/QPC/Graphene quantum Hall transport experiment/paper.pdf",
+        "文献/QPC/Graphene quantum Hall transport experiment/supplement.pdf",
     ]
 
     truncated = _run_pipeline(
-        input_record=input_record,
+        input_pdf=pdf,
         workdir=workdir,
-        vault_root=tmp_path,
+        vault_root=vault,
         run_id="integration-truncated",
         max_pages=1,
     )
@@ -170,6 +165,60 @@ def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
     assert "document_truncated:" in truncated.stderr
 
 
+def test_pipeline_formal_entry_rejects_nonmirrored_inputs_and_legacy_input_records(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    mirrored = vault / "文献" / "QPC" / "Paper" / "main.pdf"
+    mirrored.parent.mkdir(parents=True)
+    mirrored.write_bytes(b"not parsed because validation fails first")
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"local but not mirrored")
+
+    rejected_input = _run_pipeline(
+        input_pdf=outside,
+        workdir=vault / ".local" / "deeppapernote" / "runs",
+        vault_root=vault,
+        run_id="reject-outside",
+        max_pages=0,
+    )
+    rejected_workdir = _run_pipeline(
+        input_pdf=mirrored,
+        workdir=tmp_path / "runs-outside-vault",
+        vault_root=vault,
+        run_id="reject-workdir",
+        max_pages=0,
+    )
+
+    assert rejected_input.returncode != 0
+    assert "must be a local PDF under 文献/" in rejected_input.stderr
+    assert rejected_workdir.returncode != 0
+    assert "--workdir must stay under" in rejected_workdir.stderr
+    assert "--input-record" not in run_pipeline_v2.parser().format_help()
+
+
+def test_pipeline_rejects_supplement_from_another_paper_directory(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    main = vault / "文献" / "QPC" / "Paper A" / "main.pdf"
+    supplement = vault / "文献" / "QPC" / "Paper B" / "si.pdf"
+    main.parent.mkdir(parents=True)
+    supplement.parent.mkdir(parents=True)
+    main.write_bytes(b"main")
+    supplement.write_bytes(b"si")
+
+    result = _run_pipeline(
+        input_pdf=main,
+        workdir=vault / ".local" / "deeppapernote" / "runs",
+        vault_root=vault,
+        run_id="reject-cross-paper-si",
+        max_pages=0,
+        supplements=[supplement],
+    )
+
+    assert result.returncode != 0
+    assert "All supplementary PDFs must be in the main PDF's paper directory" in result.stderr
+
+
 def _make_staging(root: Path, text: str) -> Path:
     staging = root / "staging"
     (staging / "images").mkdir(parents=True)
@@ -178,10 +227,53 @@ def _make_staging(root: Path, text: str) -> Path:
 
 
 def _make_existing_target(vault: Path, folder: str, text: str) -> Path:
-    target = vault / "Research" / folder
+    target = vault / "文献" / "QPC" / folder
     (target / "images").mkdir(parents=True)
     (target / "笔记.md").write_text(text, encoding="utf-8")
+    (target / "main.pdf").write_bytes(b"source PDF must be preserved")
     return target
+
+
+def test_publish_target_is_derived_from_the_local_main_pdf_parent(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    target = vault / "文献" / "制备工艺" / "EFLAO" / "Target Paper"
+    target.mkdir(parents=True)
+    main = target / "main.pdf"
+    supplement = target / "si.pdf"
+    main.write_bytes(b"main")
+    supplement.write_bytes(b"si")
+    record = {
+        "paper_record": {
+            "documents": [
+                {
+                    "role": "main",
+                    "path": str(main.resolve()),
+                    "vault_path": "文献/制备工艺/EFLAO/Target Paper/main.pdf",
+                },
+                {
+                    "role": "supplement",
+                    "path": str(supplement.resolve()),
+                    "vault_path": "文献/制备工艺/EFLAO/Target Paper/si.pdf",
+                },
+            ]
+        }
+    }
+
+    assert resolve_publish_target(
+        vault=vault, paper_record=record, release={"title": "Target Paper"}
+    ) == target.resolve()
+
+    other = vault / "文献" / "制备工艺" / "EFLAO" / "Other Paper" / "si.pdf"
+    other.parent.mkdir()
+    other.write_bytes(b"other")
+    record["paper_record"]["documents"][1].update(
+        {
+            "path": str(other.resolve()),
+            "vault_path": "文献/制备工艺/EFLAO/Other Paper/si.pdf",
+        }
+    )
+    with pytest.raises(ContractError, match="same paper directory"):
+        resolve_publish_target(vault=vault, paper_record=record, release={"title": "Target Paper"})
 
 
 def test_publish_transaction_can_be_rolled_back_after_audit_failure(
@@ -195,8 +287,8 @@ def test_publish_transaction_can_be_rolled_back_after_audit_failure(
         '---\ntitle: "Atomic Test Paper"\nauthors:\n  - A. Author\n'
         'year: 2025\n---\nold note'
     )
-    _make_existing_target(vault, folder, old_note)
-    navigation = vault / "Research" / "论文导航.md"
+    target = _make_existing_target(vault, folder, old_note)
+    navigation = vault / "文献" / "论文导航.md"
     navigation.write_bytes(b"old navigation\r\n")
     release = {
         "folder_name": folder,
@@ -204,17 +296,19 @@ def test_publish_transaction_can_be_rolled_back_after_audit_failure(
         "authors": ["a. author"],
         "year": "2025",
     }
-    backup_root = tmp_path / "rollback"
+    backup_root = vault / ".local" / "rollback"
 
     target, backup = publish_transaction(
         staging_dir=staging,
         vault=vault,
+        target=target,
         backup_root=backup_root,
         release=release,
     )
 
     assert (target / "笔记.md").read_bytes() == b"new\nnote\n"
     assert not (target / "images").exists()
+    assert (target / "main.pdf").read_bytes() == b"source PDF must be preserved"
     assert backup is not None
     navigation.write_bytes(b"new navigation\n")
     _rollback_release_state(
@@ -225,6 +319,7 @@ def test_publish_transaction_can_be_rolled_back_after_audit_failure(
     )
     assert (target / "笔记.md").read_text(encoding="utf-8") == old_note
     assert navigation.read_bytes() == b"old navigation\r\n"
+    assert (target / "main.pdf").read_bytes() == b"source PDF must be preserved"
 
 
 def test_publish_transaction_refuses_sanitized_title_collision(tmp_path: Path) -> None:
@@ -239,7 +334,8 @@ def test_publish_transaction_refuses_sanitized_title_collision(tmp_path: Path) -
         publish_transaction(
             staging_dir=staging,
             vault=vault,
-            backup_root=tmp_path / "rollback",
+            target=target,
+            backup_root=vault / ".local" / "rollback",
             release={"folder_name": folder, "title": "A?B"},
         )
 
@@ -261,7 +357,8 @@ def test_publish_transaction_refuses_same_title_with_different_doi(tmp_path: Pat
         publish_transaction(
             staging_dir=staging,
             vault=vault,
-            backup_root=tmp_path / "rollback",
+            target=target,
+            backup_root=vault / ".local" / "rollback",
             release={
                 "folder_name": folder,
                 "title": "Shared Paper Title",
@@ -289,7 +386,8 @@ def test_publish_transaction_refuses_unidentified_same_title_with_different_auth
         publish_transaction(
             staging_dir=staging,
             vault=vault,
-            backup_root=tmp_path / "rollback",
+            target=target,
+            backup_root=vault / ".local" / "rollback",
             release={
                 "folder_name": folder,
                 "title": "Unidentified Shared Title",
@@ -305,6 +403,11 @@ def test_prepare_failure_removes_partial_publish_directory(tmp_path: Path, monke
     vault = tmp_path / "vault"
     vault.mkdir()
     staging = _make_staging(tmp_path, "new note\n")
+    old_note = (
+        '---\ntitle: "Prepare Failure"\nauthors:\n  - A. Author\n'
+        "year: 2025\n---\nold note\n"
+    )
+    target = _make_existing_target(vault, "Prepare Failure", old_note)
     (staging / "images" / "candidate.png").write_bytes(b"candidate")
     monkeypatch.setattr(
         publish_note_v2.shutil,
@@ -316,13 +419,19 @@ def test_prepare_failure_removes_partial_publish_directory(tmp_path: Path, monke
         publish_transaction(
             staging_dir=staging,
             vault=vault,
-            backup_root=tmp_path / "rollback",
-            release={"folder_name": "Prepare Failure", "title": "Prepare Failure"},
+            target=target,
+            backup_root=vault / ".local" / "rollback",
+            release={
+                "folder_name": "Prepare Failure",
+                "title": "Prepare Failure",
+                "authors": ["a. author"],
+                "year": "2025",
+            },
         )
 
-    research = vault / "Research"
-    assert research.is_dir()
-    assert list(research.iterdir()) == []
+    assert target.is_dir()
+    assert (target / "笔记.md").read_text(encoding="utf-8") == old_note
+    assert (target / "main.pdf").read_bytes() == b"source PDF must be preserved"
 
 
 def test_post_commit_validation_rechecks_note_and_image_hashes(tmp_path: Path) -> None:
@@ -363,18 +472,24 @@ def test_post_commit_validation_rechecks_note_and_image_hashes(tmp_path: Path) -
 
 def test_operational_paths_cannot_write_reader_facing_vault_content(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
-    (vault / "Research").mkdir(parents=True)
+    (vault / "文献").mkdir(parents=True)
     with pytest.raises(ContractError, match="backup_root"):
         validate_operational_paths(
             vault=vault,
-            backup_root=vault / "Research" / "rollback",
+            backup_root=vault / "文献" / "rollback",
+            output=None,
+        )
+    with pytest.raises(ContractError, match="backup_root must stay under .local"):
+        validate_operational_paths(
+            vault=vault,
+            backup_root=tmp_path / "outside-rollback",
             output=None,
         )
     with pytest.raises(ContractError, match="must stay under .local"):
         validate_operational_paths(
             vault=vault,
             backup_root=vault / ".local" / "rollback",
-            output=vault / "Research" / "论文导航.md",
+            output=vault / "文献" / "论文导航.md",
         )
     validate_operational_paths(
         vault=vault,
@@ -393,6 +508,28 @@ def test_operational_paths_cannot_write_reader_facing_vault_content(tmp_path: Pa
                 / "another-run"
                 / "snapshot.json"
             ),
+        )
+
+
+def test_publish_transaction_rejects_a_backup_inside_the_paper_library(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    target = _make_existing_target(
+        vault,
+        "Backup Boundary",
+        '---\ntitle: "Backup Boundary"\nauthors:\n  - A. Author\nyear: 2025\n---\nold\n',
+    )
+    with pytest.raises(ContractError, match="backup_root"):
+        publish_transaction(
+            staging_dir=_make_staging(tmp_path, "new note\n"),
+            vault=vault,
+            target=target,
+            backup_root=target / "rollback",
+            release={
+                "title": "Backup Boundary",
+                "authors": ["a. author"],
+                "year": "2025",
+            },
         )
 
 
@@ -541,12 +678,10 @@ def test_old_audit_cleanup_failure_is_only_a_warning(tmp_path: Path, monkeypatch
     [
         "build_figure_contact_sheet_v2.py",
         "build_synthesis_bundle_v2.py",
-        "create_input_record.py",
         "extract_evidence_v2.py",
         "extract_pdf_assets_v2.py",
         "lint_note_v2.py",
         "lint_vault.py",
-        "locate_zotero_attachment.py",
         "paper_record_v2.py",
         "plan_figures_v2.py",
         "publish_note_v2.py",

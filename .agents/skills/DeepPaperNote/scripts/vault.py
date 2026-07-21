@@ -20,9 +20,11 @@ from typing import Any, Iterable, Mapping, Sequence
 import fitz
 from contracts_v2 import SCHEMA_VERSION, sha256_file
 
-NOTE_FILENAME = "笔记.md"
-NAVIGATION_PATH = Path("Research") / "论文导航.md"
-BASE_PATH = Path("Research") / "论文库.base"
+NOTE_FILENAME = "\u7b14\u8bb0.md"
+LOCAL_PDF_LIBRARY_ROOT = "\u6587\u732e"
+PAPER_LIBRARY_PATH = Path(LOCAL_PDF_LIBRARY_ROOT)
+NAVIGATION_PATH = PAPER_LIBRARY_PATH / "\u8bba\u6587\u5bfc\u822a.md"
+BASE_PATH = PAPER_LIBRARY_PATH / "\u8bba\u6587\u5e93.base"
 
 REQUIRED_PROPERTIES = (
     "type",
@@ -52,8 +54,6 @@ OPTIONAL_PROPERTIES = (
     "materials",
     "code_url",
     "project_url",
-    "zotero_key",
-    "zotero_uri",
 )
 
 LIST_PROPERTIES = {
@@ -100,15 +100,13 @@ SHORTCUT_IMAGE_RE = re.compile(r"!\[[^\[\]]+\](?!\s*[\[(])")
 HTML_IMAGE_RE = re.compile(r"<img\b", re.IGNORECASE)
 TAG_RE = re.compile(r"^papers(?:/[a-z0-9][a-z0-9-]*)+$")
 YEAR_RE = re.compile(r"^(?:18|19|20|21)\d{2}$")
-LOCAL_PDF_LIBRARY_ROOT = "\u6587\u732e"
-
 BASE_REQUIRED_VIEWS = (
     "\u5168\u90e8\u8bba\u6587",
     "\u5f85\u8865\u56fe",
     "\u6309\u4e3b\u9898",
 )
 BASE_REQUIRED_FILTERS = (
-    'file.inFolder("Research")',
+    f'file.inFolder("{LOCAL_PDF_LIBRARY_ROOT}")',
     'file.name == "\u7b14\u8bb0"',
 )
 
@@ -459,6 +457,20 @@ def is_absolute_local_path(value: str) -> bool:
     )
 
 
+def is_safe_library_pdf_path(value: str) -> bool:
+    """Accept only a non-escaping Vault-relative PDF below 文献/<collection>/<paper>/."""
+    raw = urllib.parse.unquote(str(value or "")).strip().replace("\\", "/")
+    path = PurePosixPath(raw)
+    return bool(
+        raw
+        and not path.is_absolute()
+        and len(path.parts) >= 4
+        and path.parts[0] == LOCAL_PDF_LIBRARY_ROOT
+        and path.suffix.casefold() == ".pdf"
+        and all(part not in {"", ".", ".."} for part in path.parts)
+    )
+
+
 def _property_issue(code: str, prop: str, message: str) -> dict[str, str]:
     return {"code": code, "property": prop, "message": message}
 
@@ -565,14 +577,30 @@ def validate_frontmatter_properties(properties: Mapping[str, Any]) -> list[dict[
                         "local_source_absolute", key, f"{key} must be Vault-relative, not absolute"
                     )
                 )
+            elif not is_safe_library_pdf_path(str(item)):
+                issues.append(
+                    _property_issue(
+                        "local_source_path_invalid",
+                        key,
+                        f"{key} must be a PDF under 文献/<collection>/<paper>/",
+                    )
+                )
     return issues
 
 
 def normalize_lookup_key(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", urllib.parse.unquote(value or "")).casefold()
     normalized = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", normalized)
-    normalized = re.sub(r"[\s\-_/\\:：.,;，。；'\"‘’“”()（）\[\]{}]+", "", normalized)
+    normalized = re.sub(r"[\s\-_/\\:：.,;，。；'\"‘’“”()（）\[\]{}<>|?*\x00-\x1f]+", "", normalized)
     return normalized
+
+
+def folder_title_matches(title: str, folder_name: str) -> bool:
+    """Allow a canonical title or a Zotero collision suffix."""
+    if normalize_lookup_key(title) == normalize_lookup_key(folder_name):
+        return True
+    collision_free = re.sub(r"\s*\[[A-Za-z0-9]{8}\]\s*$", "", folder_name)
+    return normalize_lookup_key(title) == normalize_lookup_key(collision_free)
 
 
 def _first_h1(body: str) -> str:
@@ -581,11 +609,11 @@ def _first_h1(body: str) -> str:
 
 
 def discover_notes(vault_root: Path) -> list[NoteRecord]:
-    research = vault_root / "Research"
-    if not research.exists():
+    library = vault_root / PAPER_LIBRARY_PATH
+    if not library.exists():
         return []
     records: list[NoteRecord] = []
-    for path in sorted(research.rglob(NOTE_FILENAME), key=lambda item: item.as_posix().casefold()):
+    for path in sorted(library.rglob(NOTE_FILENAME), key=lambda item: item.as_posix().casefold()):
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8-sig")
@@ -687,12 +715,15 @@ def is_local_pdf_library_link(link: WikiLink) -> bool:
     if link.embedded:
         return False
     target = re.split(r"[#^]", link.target, maxsplit=1)[0].strip()
-    normalized = urllib.parse.unquote(target).replace("\\", "/").lstrip("/")
+    normalized = urllib.parse.unquote(target).replace("\\", "/")
     path = PurePosixPath(normalized)
     return (
-        len(path.parts) >= 2
+        bool(normalized)
+        and not path.is_absolute()
+        and len(path.parts) >= 4
         and path.parts[0] == LOCAL_PDF_LIBRARY_ROOT
         and path.suffix.casefold() == ".pdf"
+        and all(part not in {"", ".", ".."} for part in path.parts)
     )
 
 
@@ -909,7 +940,7 @@ def _validate_base_file(path: Path, vault_root: Path, issues: list[VaultIssue]) 
     relative = path.relative_to(vault_root).as_posix()
     if not path.exists():
         _issue(
-            issues, "paper_base_missing", relative, "Research/\u8bba\u6587\u5e93.base is required"
+            issues, "paper_base_missing", relative, f"{BASE_PATH.as_posix()} is required"
         )
         return
     text = path.read_text(encoding="utf-8-sig")
@@ -953,7 +984,7 @@ def _validate_base_file(path: Path, vault_root: Path, issues: list[VaultIssue]) 
             issues,
             "paper_base_filter_invalid",
             relative,
-            "Base must select only Research/**/\u7b14\u8bb0.md",
+            "Base must select only \u6587\u732e/**/\u7b14\u8bb0.md",
             missing=missing_filters,
         )
 
@@ -962,6 +993,8 @@ def _paper_directory_images(
     paper_dir: Path,
     vault_root: Path,
     issues: list[VaultIssue],
+    *,
+    allow_nested_directories: bool = False,
 ) -> list[Path]:
     """Validate one permanent paper directory and return supported image files."""
     paper_relative = paper_dir.relative_to(vault_root).as_posix()
@@ -976,12 +1009,16 @@ def _paper_directory_images(
                     f"{NOTE_FILENAME} must be a regular file",
                 )
             continue
+        if entry.is_file() and entry.suffix.casefold() == ".pdf":
+            continue
         if entry.name != "images":
+            if entry.is_dir() and allow_nested_directories:
+                continue
             _issue(
                 issues,
                 "paper_directory_extra_entry",
                 paper_relative,
-                "Paper directories may contain only the note and an optional images/ directory",
+                "Paper directories may contain PDFs, the note, and an optional images/ directory",
                 entry=entry.name,
             )
             continue
@@ -1014,50 +1051,134 @@ def _paper_directory_images(
     return image_files
 
 
-def _validate_research_structure(
+def _validate_library_structure(
     vault_root: Path,
     issues: list[VaultIssue],
 ) -> list[Path]:
-    research = vault_root / "Research"
-    if not research.is_dir():
-        _issue(issues, "research_directory_missing", "Research", "Research/ is required")
+    """Validate nested Zotero-backed paper directories without requiring notes."""
+    legacy_research = vault_root / "Research"
+    if legacy_research.exists():
+        _issue(
+            issues,
+            "legacy_research_directory_present",
+            "Research",
+            "Research/ is obsolete; migrate its notes into the \u6587\u732e/ paper tree",
+        )
+
+    library = vault_root / PAPER_LIBRARY_PATH
+    library_relative = PAPER_LIBRARY_PATH.as_posix()
+    if not library.is_dir():
+        _issue(
+            issues,
+            "paper_library_missing",
+            library_relative,
+            f"{library_relative}/ is required",
+        )
         return []
+
     image_files: list[Path] = []
-    for entry in sorted(research.iterdir(), key=lambda item: item.name.casefold()):
-        relative = entry.relative_to(vault_root).as_posix()
-        if entry.is_file():
-            if entry.name == NAVIGATION_PATH.name or entry.suffix.casefold() == ".base":
+
+    def walk(directory: Path, *, depth: int, is_root: bool = False) -> None:
+        entries = sorted(directory.iterdir(), key=lambda item: item.name.casefold())
+        relative = directory.relative_to(vault_root).as_posix()
+        if is_root:
+            for entry in entries:
+                entry_relative = entry.relative_to(vault_root).as_posix()
+                if entry.is_file() and entry.name in {NAVIGATION_PATH.name, BASE_PATH.name}:
+                    continue
+                if entry.is_dir():
+                    if entry.name.startswith("."):
+                        _issue(
+                            issues,
+                            "library_temporary_directory",
+                            entry_relative,
+                            "Temporary directories must not remain in \u6587\u732e/",
+                        )
+                    else:
+                        walk(entry, depth=1)
+                    continue
+                _issue(
+                    issues,
+                    "library_root_extra_entry",
+                    entry_relative,
+                    (
+                        "\u6587\u732e/ root may contain only navigation, Base files, "
+                        "and collection directories"
+                    ),
+                )
+            return
+
+        has_note = any(entry.name == NOTE_FILENAME for entry in entries)
+        has_pdf = any(entry.is_file() and entry.suffix.casefold() == ".pdf" for entry in entries)
+        has_images = any(entry.name == "images" for entry in entries)
+        if has_note or has_pdf or has_images:
+            if depth < 2:
+                _issue(
+                    issues,
+                    "paper_directory_shallow",
+                    relative,
+                    "Paper directories must be below 文献/<分类>/<论文>/",
+                )
+                if has_images and not (directory / NOTE_FILENAME).is_file():
+                    _issue(
+                        issues,
+                        "paper_directory_note_missing",
+                        relative,
+                        f"A paper directory with images must contain {NOTE_FILENAME}",
+                    )
+                image_files.extend(
+                    _paper_directory_images(
+                        directory,
+                        vault_root,
+                        issues,
+                        allow_nested_directories=True,
+                    )
+                )
+                for entry in entries:
+                    entry_relative = entry.relative_to(vault_root).as_posix()
+                    if not entry.is_dir() or entry.name == "images":
+                        continue
+                    if entry.name.startswith("."):
+                        _issue(
+                            issues,
+                            "library_temporary_directory",
+                            entry_relative,
+                            "Temporary directories must not remain in 文献/",
+                        )
+                    else:
+                        walk(entry, depth=depth + 1)
+                return
+            if has_images and not (directory / NOTE_FILENAME).is_file():
+                _issue(
+                    issues,
+                    "paper_directory_note_missing",
+                    relative,
+                    f"A paper directory with images must contain {NOTE_FILENAME}",
+                )
+            image_files.extend(_paper_directory_images(directory, vault_root, issues))
+            return
+
+        for entry in entries:
+            entry_relative = entry.relative_to(vault_root).as_posix()
+            if entry.is_dir():
+                if entry.name.startswith("."):
+                    _issue(
+                        issues,
+                        "library_temporary_directory",
+                        entry_relative,
+                        "Temporary directories must not remain in \u6587\u732e/",
+                    )
+                else:
+                    walk(entry, depth=depth + 1)
                 continue
             _issue(
                 issues,
-                "research_root_extra_entry",
-                relative,
-                "Research/ root may contain only navigation, Base files, and paper directories",
+                "collection_directory_extra_entry",
+                entry_relative,
+                "Collection directories may contain only nested collections or paper directories",
             )
-            continue
-        if not entry.is_dir():
-            _issue(
-                issues,
-                "research_root_extra_entry",
-                relative,
-                "Research/ contains an unsupported filesystem entry",
-            )
-            continue
-        if entry.name.startswith("."):
-            _issue(
-                issues,
-                "research_temporary_directory",
-                relative,
-                "Temporary publish directories must not remain in Research/",
-            )
-        if not (entry / NOTE_FILENAME).is_file():
-            _issue(
-                issues,
-                "paper_directory_note_missing",
-                relative,
-                f"Every Research paper directory must contain {NOTE_FILENAME}",
-            )
-        image_files.extend(_paper_directory_images(entry, vault_root, issues))
+
+    walk(library, depth=0, is_root=True)
     return image_files
 
 
@@ -1075,7 +1196,7 @@ def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> d
     issues: list[VaultIssue] = []
     referenced_images: set[str] = set()
     note_paths = {record.relative_path.casefold() for record in records}
-    all_images = _validate_research_structure(vault_root, issues)
+    all_images = _validate_library_structure(vault_root, issues)
 
     for record in records:
         for parse_error in record.parse_errors:
@@ -1089,14 +1210,15 @@ def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> d
                 property=frontmatter_issue["property"],
             )
         property_title = str(record.properties.get("title", ""))
-        if property_title and normalize_lookup_key(property_title) != normalize_lookup_key(
-            record.folder_name
-        ):
+        if property_title and not folder_title_matches(property_title, record.folder_name):
             _issue(
                 issues,
                 "title_folder_mismatch",
                 record.relative_path,
-                "Frontmatter title must match the canonical paper folder",
+                (
+                    "Frontmatter title must match the canonical paper folder "
+                    "(with an optional Zotero item-key suffix)"
+                ),
                 title=property_title,
                 folder=record.folder_name,
             )
@@ -1178,7 +1300,7 @@ def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> d
             _issue(
                 issues,
                 "link_index_collision",
-                "Research",
+                PAPER_LIBRARY_PATH.as_posix(),
                 "Multiple notes share a title, alias, or DOI lookup key",
                 severity="warning",
                 key=key,
@@ -1192,7 +1314,7 @@ def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> d
             issues,
             "paper_navigation_missing",
             NAVIGATION_PATH.as_posix(),
-            "Research/论文导航.md is required",
+            f"{NAVIGATION_PATH.as_posix()} is required",
         )
     else:
         navigation_text = navigation_path.read_text(encoding="utf-8-sig")

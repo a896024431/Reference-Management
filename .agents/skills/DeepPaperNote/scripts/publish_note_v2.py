@@ -9,7 +9,7 @@ import re
 import shutil
 import uuid
 import warnings
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from build_synthesis_bundle_v2 import build_bundle
@@ -42,8 +42,10 @@ from lint_note_v2 import reader_visible_figure_metadata_issues
 from rebuild_paper_navigation import write_navigation_atomic
 from vault import (
     IMAGE_EXTENSIONS,
+    LOCAL_PDF_LIBRARY_ROOT,
     NAVIGATION_PATH,
     NOTE_FILENAME,
+    folder_title_matches,
     lint_vault,
     paper_local_image_names,
     parse_frontmatter,
@@ -108,6 +110,86 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
+def _vault_pdf_path(value: object) -> PurePosixPath:
+    raw = str(value or "").strip().replace("\\", "/")
+    path = PurePosixPath(raw)
+    if (
+        not raw
+        or path.is_absolute()
+        or len(path.parts) < 4
+        or path.parts[0] != LOCAL_PDF_LIBRARY_ROOT
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or path.suffix.casefold() != ".pdf"
+    ):
+        raise ContractError(
+            "Formal publishing requires each document to be a Vault-relative PDF under "
+            "\u6587\u732e/<collection>/<paper>/"
+        )
+    return path
+
+
+def _document_path_in_vault(
+    *,
+    vault: Path,
+    document: dict[str, Any],
+) -> tuple[Path, PurePosixPath]:
+    relative = _vault_pdf_path(document.get("vault_path"))
+    expected = (vault / Path(*relative.parts)).resolve()
+    library = (vault / LOCAL_PDF_LIBRARY_ROOT).resolve()
+    if not _inside(expected, library):
+        raise ContractError("Document Vault path escaped the \u6587\u732e/ library")
+    local = Path(str(document.get("path", ""))).expanduser().resolve()
+    if local != expected:
+        raise ContractError("Document local path does not match its Vault-relative path")
+    if not local.is_file():
+        raise ContractError(f"Document PDF is missing: {relative.as_posix()}")
+    return local, relative
+
+
+def resolve_publish_target(
+    *,
+    vault: Path,
+    paper_record: dict[str, Any],
+    release: dict[str, Any],
+) -> Path:
+    """Derive and validate the Zotero-mirrored paper directory from local PDFs."""
+    documents = paper_record["paper_record"].get("documents", [])
+    main_documents = [
+        document
+        for document in documents
+        if isinstance(document, dict) and document.get("role") == "main"
+    ]
+    if len(main_documents) != 1:
+        raise ContractError("Formal publishing requires exactly one local main PDF")
+
+    main_path, _ = _document_path_in_vault(
+        vault=vault,
+        document=main_documents[0],
+    )
+    target = main_path.parent
+    if not target.is_dir() or not folder_title_matches(str(release["title"]), target.name):
+        raise ContractError(
+            "Main PDF must live in the canonical paper directory under \u6587\u732e/"
+        )
+    for document in documents:
+        if not isinstance(document, dict):
+            raise ContractError("paper_record documents must be objects")
+        document_path, _ = _document_path_in_vault(vault=vault, document=document)
+        if document_path.parent != target:
+            raise ContractError(
+                "Main PDF and supplementary PDFs must be stored in the same paper directory"
+            )
+    return target
+
+
+def _pdf_hashes(target: Path) -> dict[str, str]:
+    return {
+        path.name: sha256_file(path)
+        for path in sorted(target.iterdir(), key=lambda item: item.name.casefold())
+        if path.is_file() and path.suffix.casefold() == ".pdf"
+    }
+
+
 def _safe_remove_tree(path: Path, *, allowed_root: Path) -> None:
     resolved = path.resolve()
     if not _inside(resolved, allowed_root) or resolved == allowed_root.resolve():
@@ -125,12 +207,14 @@ def validate_operational_paths(
     output: Path | None,
 ) -> None:
     """Keep rollback/report artifacts outside reader-facing and tracked Vault content."""
-    research = (vault / "Research").resolve()
-    if _inside(backup_root, research):
-        raise ContractError("backup_root must stay outside reader-facing Research/")
+    library = (vault / LOCAL_PDF_LIBRARY_ROOT).resolve()
+    local_root = (vault / ".local").resolve()
+    if _inside(backup_root, library):
+        raise ContractError("backup_root must stay outside reader-facing \u6587\u732e/")
+    if not _inside(backup_root, local_root):
+        raise ContractError("backup_root must stay under .local/")
     if output is None or not _inside(output, vault):
         return
-    local_root = (vault / ".local").resolve()
     if not _inside(output, local_root):
         raise ContractError("publish report output inside the Vault must stay under .local/")
     published_root = (local_root / "deeppapernote" / "published").resolve()
@@ -524,7 +608,11 @@ def validate_existing_target_identity(target: Path, release: dict[str, Any]) -> 
     """Refuse to replace an unrelated paper whose sanitized folder name collides."""
     if not target.exists():
         return
+    if not target.is_dir():
+        raise ContractError(f"Existing paper target is not a directory: {target}")
     note_path = target / NOTE_FILENAME
+    if not note_path.exists():
+        return
     if not note_path.is_file():
         raise ContractError(f"Existing paper target has no regular {NOTE_FILENAME}: {target}")
     parsed = parse_frontmatter(note_path.read_text(encoding="utf-8-sig"))
@@ -568,17 +656,12 @@ def validate_existing_target_identity(target: Path, release: dict[str, Any]) -> 
 
 
 def validate_published_target(target: Path, release: dict[str, Any]) -> None:
-    """Recheck the committed reader-facing directory, including LF and image parity."""
-    expected = {NOTE_FILENAME}
-    if release["image_names"]:
-        expected.add("images")
-    actual = {item.name for item in target.iterdir()}
-    if actual != expected:
-        raise ContractError(
-            "Published directory contents changed during commit: "
-            f"expected={sorted(expected)!r}, actual={sorted(actual)!r}"
-        )
+    """Recheck managed output while proving the source PDFs were left untouched."""
     note_path = target / NOTE_FILENAME
+    if not note_path.is_file():
+        raise ContractError(f"Published target is missing a regular {NOTE_FILENAME}")
+    if "pdf_sha256" in release and _pdf_hashes(target) != release["pdf_sha256"]:
+        raise ContractError("Published target changed one or more source PDFs")
     note_bytes = note_path.read_bytes()
     if b"\r" in note_bytes:
         raise ContractError("Published note must use LF line endings")
@@ -597,40 +680,113 @@ def validate_published_target(target: Path, release: dict[str, Any]) -> None:
             raise ContractError(f"Published image hash mismatch: {name}")
 
 
+def _remove_managed_content(target: Path, *, library: Path) -> None:
+    note_path = target / NOTE_FILENAME
+    if note_path.exists():
+        if not note_path.is_file():
+            raise ContractError(f"Managed note path is not a regular file: {note_path}")
+        note_path.unlink()
+    image_dir = target / "images"
+    if image_dir.exists():
+        if not image_dir.is_dir():
+            raise ContractError(f"Managed images path is not a directory: {image_dir}")
+        _safe_remove_tree(image_dir, allowed_root=library)
+
+
+def _restore_managed_content(
+    *,
+    target: Path,
+    backup: Path | None,
+    library: Path,
+) -> None:
+    _remove_managed_content(target, library=library)
+    if backup is None:
+        return
+    previous_note = backup / NOTE_FILENAME
+    if previous_note.exists():
+        os.replace(previous_note, target / NOTE_FILENAME)
+    previous_images = backup / "images"
+    if previous_images.exists():
+        os.replace(previous_images, target / "images")
+
+
 def publish_transaction(
     *,
     staging_dir: Path,
     vault: Path,
+    target: Path,
     backup_root: Path,
     release: dict[str, Any],
 ) -> tuple[Path, Path | None]:
-    research = vault / "Research"
-    research.mkdir(parents=True, exist_ok=True)
-    target = research / release["folder_name"]
+    validate_operational_paths(vault=vault, backup_root=backup_root, output=None)
+    library = (vault / LOCAL_PDF_LIBRARY_ROOT).resolve()
+    target = target.resolve()
+    if not target.is_dir() or not _inside(target, library):
+        raise ContractError(
+            "Publish target must be an existing paper directory under \u6587\u732e/"
+        )
     validate_existing_target_identity(target, release)
-    prepared = research / f".{release['folder_name']}.publish-{uuid.uuid4().hex}"
-    if not _inside(prepared, research):
-        raise ContractError("Prepared publish directory escaped Research")
-    backup_target: Path | None = None
+    release["pdf_sha256"] = _pdf_hashes(target)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    prepared = backup_root / f".{target.name}.publish-{uuid.uuid4().hex}"
+    backup_target = backup_root / f"{target.name}.managed-{uuid.uuid4().hex}"
+    if not _inside(prepared, backup_root) or not _inside(backup_target, backup_root):
+        raise ContractError("Prepared publish paths escaped the rollback root")
+    note_backed_up = False
+    images_backed_up = False
+    note_published = False
+    images_published = False
     try:
         _prepare_directory(staging_dir=staging_dir, prepared=prepared)
-        if target.exists():
-            backup_root.mkdir(parents=True, exist_ok=True)
-            backup_target = backup_root / release["folder_name"]
-            if backup_target.exists():
-                raise ContractError(f"Backup target already exists: {backup_target}")
-            if not _inside(target, research) or not _inside(backup_target, backup_root):
-                raise ContractError("Publish or backup path escaped its intended root")
-            os.replace(target, backup_target)
-        os.replace(prepared, target)
-    except Exception:
-        if target.exists() and backup_target and backup_target.exists():
-            failed_new = backup_root / f"{release['folder_name']}.failed-{uuid.uuid4().hex}"
-            os.replace(target, failed_new)
-        if backup_target and backup_target.exists() and not target.exists():
-            os.replace(backup_target, target)
+        backup_target.mkdir(parents=False, exist_ok=False)
+        previous_note = target / NOTE_FILENAME
+        if previous_note.exists():
+            if not previous_note.is_file():
+                raise ContractError(f"Existing note is not a regular file: {previous_note}")
+            os.replace(previous_note, backup_target / NOTE_FILENAME)
+            note_backed_up = True
+        previous_images = target / "images"
+        if previous_images.exists():
+            if not previous_images.is_dir():
+                raise ContractError(f"Existing images path is not a directory: {previous_images}")
+            os.replace(previous_images, backup_target / "images")
+            images_backed_up = True
+
+        os.replace(prepared / NOTE_FILENAME, target / NOTE_FILENAME)
+        note_published = True
+        prepared_images = prepared / "images"
+        if prepared_images.exists():
+            os.replace(prepared_images, target / "images")
+            images_published = True
+        _safe_remove_tree(prepared, allowed_root=backup_root)
+    except Exception as exc:
+        rollback_failures: list[str] = []
+        try:
+            if note_published:
+                published_note = target / NOTE_FILENAME
+                if published_note.exists():
+                    published_note.unlink()
+            if images_published:
+                published_images = target / "images"
+                if published_images.exists():
+                    _safe_remove_tree(published_images, allowed_root=library)
+            if note_backed_up:
+                os.replace(backup_target / NOTE_FILENAME, target / NOTE_FILENAME)
+            if images_backed_up:
+                os.replace(backup_target / "images", target / "images")
+        except Exception as rollback_exc:
+            rollback_failures.append(str(rollback_exc))
         if prepared.exists():
-            _safe_remove_tree(prepared, allowed_root=research)
+            try:
+                _safe_remove_tree(prepared, allowed_root=backup_root)
+            except Exception as cleanup_exc:
+                rollback_failures.append(str(cleanup_exc))
+        if not rollback_failures and backup_target.exists():
+            _safe_remove_tree(backup_target, allowed_root=backup_root)
+        if rollback_failures:
+            raise ContractError(
+                "Publish transaction rollback was incomplete: " + "; ".join(rollback_failures)
+            ) from exc
         raise
     return target, backup_target
 
@@ -694,7 +850,7 @@ def archive_publish_audit(
     release: dict[str, Any],
     report: dict[str, Any],
 ) -> Path:
-    """Write a compact JSON-only audit outside the reader-facing Research tree."""
+    """Write a compact JSON-only audit outside the reader-facing paper library."""
     audit_target = _audit_target(vault, release["run_id"])
     validate_existing_audit_identity(audit_target, release)
     audit_root = audit_target.parent
@@ -727,9 +883,7 @@ def archive_publish_audit(
         )
         snapshot.update(
             {
-                "note": (
-                    Path("Research") / release["folder_name"] / NOTE_FILENAME
-                ).as_posix(),
+                "note": (target / NOTE_FILENAME).relative_to(vault).as_posix(),
                 "note_sha256": release["note_sha256"],
                 "note_file_sha256": sha256_file(target / NOTE_FILENAME),
                 "images": image_records,
@@ -770,11 +924,12 @@ def archive_publish_audit(
 def _rollback_after_audit_failure(
     *, target: Path, backup: Path | None, vault: Path
 ) -> None:
-    research = vault / "Research"
-    if target.exists():
-        _safe_remove_tree(target, allowed_root=research)
-    if backup and backup.exists():
-        os.replace(backup, target)
+    library = (vault / LOCAL_PDF_LIBRARY_ROOT).resolve()
+    if not target.exists() or not _inside(target, library):
+        raise ContractError("Cannot roll back a target outside the \u6587\u732e/ paper library")
+    _restore_managed_content(target=target, backup=backup, library=library)
+    if backup and backup.exists() and not any(backup.iterdir()):
+        backup.rmdir()
 
 
 def _rollback_release_state(
@@ -829,7 +984,11 @@ def main() -> None:
         backup_root=backup_root,
         output=report_output,
     )
-    predicted_target = vault / "Research" / release["folder_name"]
+    predicted_target = resolve_publish_target(
+        vault=vault,
+        paper_record=artifacts["paper_record"],
+        release=release,
+    )
     predicted_audit = _audit_target(vault, release["run_id"])
     validate_existing_audit_identity(predicted_audit, release)
     navigation_path = vault / NAVIGATION_PATH
@@ -859,6 +1018,7 @@ def main() -> None:
     target, backup = publish_transaction(
         staging_dir=staging_dir,
         vault=vault,
+        target=predicted_target,
         backup_root=backup_root,
         release=release,
     )

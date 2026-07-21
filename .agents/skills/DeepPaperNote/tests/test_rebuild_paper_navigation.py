@@ -12,7 +12,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import rebuild_paper_navigation  # noqa: E402
 from rebuild_paper_navigation import render_navigation, write_navigation_atomic  # noqa: E402
-from vault import NOTE_FILENAME, render_frontmatter  # noqa: E402
+from vault import NAVIGATION_PATH, NOTE_FILENAME, render_frontmatter  # noqa: E402
 
 
 def properties(title: str, title_zh: str, domain: str, topics: list[str]) -> dict[str, object]:
@@ -53,7 +53,7 @@ class NavigationGenerationTests(unittest.TestCase):
                 ),
             )
             for title, title_zh, domain, topics in papers:
-                paper_dir = vault / "Research" / title
+                paper_dir = vault / "文献" / "QPC" / title
                 (paper_dir / "images").mkdir(parents=True)
                 (paper_dir / NOTE_FILENAME).write_text(
                     render_frontmatter(properties(title, title_zh, domain, topics))
@@ -66,8 +66,8 @@ class NavigationGenerationTests(unittest.TestCase):
             self.assertIn("![[\u8bba\u6587\u5e93.base]]", generated)
             self.assertIn("## \u8bba\u6587\u5217\u8868", generated)
             self.assertNotIn("### quantum-transport", generated)
-            paper_a_link = f"[[Research/Paper A/{NOTE_FILENAME[:-3]}|\u8bba\u6587\u7532]]"
-            paper_b_link = f"[[Research/Paper B/{NOTE_FILENAME[:-3]}|\u8bba\u6587\u4e59]]"
+            paper_a_link = f"[[文献/QPC/Paper A/{NOTE_FILENAME[:-3]}|\u8bba\u6587\u7532]]"
+            paper_b_link = f"[[文献/QPC/Paper B/{NOTE_FILENAME[:-3]}|\u8bba\u6587\u4e59]]"
             self.assertEqual(generated.count(paper_a_link), 1)
             self.assertEqual(generated.count(paper_b_link), 1)
             self.assertEqual(generated.count(f"/{NOTE_FILENAME[:-3]}|"), 2)
@@ -75,7 +75,7 @@ class NavigationGenerationTests(unittest.TestCase):
     def test_refuses_legacy_note_without_v2_properties(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             vault = Path(temp)
-            paper_dir = vault / "Research" / "Legacy"
+            paper_dir = vault / "文献" / "制备工艺" / "EFLAO" / "Legacy"
             paper_dir.mkdir(parents=True)
             (paper_dir / NOTE_FILENAME).write_text("# Legacy\n", encoding="utf-8")
             with self.assertRaises(ValueError):
@@ -84,7 +84,7 @@ class NavigationGenerationTests(unittest.TestCase):
     def test_atomic_write_preserves_previous_file_when_replace_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             vault = Path(temp)
-            target = vault / "Research" / "论文导航.md"
+            target = vault / NAVIGATION_PATH
             target.parent.mkdir(parents=True)
             target.write_bytes(b"old\r\ncontent\r\n")
 

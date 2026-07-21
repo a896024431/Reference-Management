@@ -4,9 +4,9 @@
 
 一次运行只对应一篇论文，可包含一份主文和多份补充材料。每个 JSON 结果文件必须包含 `schema_version`、`artifact_type`、`paper_id`、`run_id`、`status` 和 `failures`，同一次处理中的论文与运行编号必须完全一致。
 
-优先使用本地 PDF 和可信本地附件。标题检索结果按 DOI、arXiv、规范标题与年份去重；只有一个可信身份时自动接受，否则列出候选并停止。
+正式流程只使用 `文献/` 中已镜像的本地 PDF。论文身份从本地主文、既有 Vault frontmatter 和本地补充材料核验；不得在日常笔记流程中查询 DOI、arXiv、Zotero 或其他网络来源。
 
-所有中间文件放在 `.local/deeppapernote/runs/<run_id>/`。正式 `Research/` 不保存运行 manifest。
+所有中间文件放在 `.local/deeppapernote/runs/<run_id>/`。正式 `文献/` 不保存运行 manifest。
 
 ## 确定性处理流程
 
@@ -22,7 +22,7 @@
 
 任一文档解析失败、页数变化、实际截断、OCR 覆盖低于 60%、无页面或论文类型所需证据缺失时，evidence 状态为 `fail`，处理流程以非零状态退出。确定性阶段通过只表示 synthesis bundle 已就绪。
 
-正常参数为 `--input` 或 `--input-record`，以及可选 `--run-id`、`--workdir`、`--vault-root`、可重复 `--supplement`、`--offline`、`--max-pages`；0 表示全文。`--run-id` 只能是小写、非 Windows 保留名的安全目录名；`--offline` 只允许本地 PDF 或可信本地 input record，禁止所有元数据查询和 URL 下载。直接 PDF URL 下载后必须从文档元数据或首页确认题名，不能把 `download.pdf` 一类文件名当论文身份。
+正式参数为本地 `--input`、必需的 `--vault-root`、`--offline`、可重复本地 `--supplement`，以及可选 `--run-id`、`--workdir`、`--max-pages`；0 表示全文。`--run-id` 只能是小写、非 Windows 保留名的安全目录名。主文和补充材料必须位于同一 `文献/<分类>/<论文目录>/` 中；禁止元数据查询和 URL 下载。
 
 ## 模型与复核阶段
 
@@ -62,7 +62,7 @@
 - 从 decisions 推导 `figure_status`：无决策为 `none_needed`；只有 placeholder 为 `placeholder_only`；placeholder 与 inserted 并存为 `partial`；无 placeholder 为 `complete`。
 - 拒绝待发布目录顶层的额外文件，以及 `images/` 中的目录或非图片文件。
 - 验证图片的 document/page/稳定身份、实际解码、内容指纹，并要求正文图片恰好等于已插入且通过视觉复核的本地图片集合；拒绝远程、data URI 与 HTML 图片。
-- 安全替换 `Research/<标题>/`：只有新目录准备完整后才切换；同名目录必须由 DOI/arXiv 或 authors+year 证明是同一论文，失败时恢复旧目录。
+- 从主文的 Vault 相对路径定位 `文献/<分类>/<论文目录>/`，只安全替换 `笔记.md` 与 `images/`；同目录 PDF/SI 不得被移动、删除或改写。已有笔记时仍须由 DOI/arXiv 或 authors+year 证明同一论文，失败时恢复受管内容。
 - 原子重建导航并执行严格 Vault lint；失败时恢复旧笔记和导航。
 - 最终检查通过后才安全更新 `.local/deeppapernote/published/<run_id>/`；新记录写入失败时恢复旧版本。
 - 写出带导航指纹和 Vault lint 摘要的最终完成凭证；清理遗留 backup 失败只记录警告，不把已完成发布误报为失败。

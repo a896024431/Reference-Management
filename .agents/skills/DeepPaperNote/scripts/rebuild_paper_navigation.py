@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate a compact Research/论文导航.md from validated paper notes."""
+"""Regenerate a compact 文献/论文导航.md from validated paper notes."""
 
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ def main() -> None:
     if args.check:
         existing = target.read_text(encoding="utf-8-sig") if target.exists() else ""
         if existing != generated:
-            raise SystemExit("Research/论文导航.md is stale; rerun rebuild_paper_navigation.py")
+            raise SystemExit("文献/论文导航.md is stale; rerun rebuild_paper_navigation.py")
         return
     write_navigation_atomic(vault_root, generated)
 

@@ -1,4 +1,4 @@
-name: DeepPaperNote v2 CI
+name: DeepPaperNote and Zotero PDF Sync CI
 
 on:
   push:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  deeppapernote:
     strategy:
       fail-fast: false
       matrix:
@@ -53,3 +53,37 @@ jobs:
 
       - name: Validate tracked Vault
         run: python scripts/lint_vault.py --vault ../../.. --allow-missing-local-pdfs
+
+  zotero-pdf-sync:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.11"
+    runs-on: ${{ matrix.os }}
+
+    env:
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install sync-skill test tools
+        run: python -m pip install pytest ruff
+
+      - name: Check sync-skill static quality
+        run: python -m ruff check .agents/skills/zotero-pdf-sync/scripts .agents/skills/zotero-pdf-sync/tests
+
+      - name: Run sync-skill tests
+        run: python -m pytest -q .agents/skills/zotero-pdf-sync/tests

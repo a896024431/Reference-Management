@@ -10,11 +10,13 @@
 !README.md
 !更新报告.md
 
-# Repo-local DeepPaperNote skill.
+# Repo-local skills.
 !.agents/
 !.agents/skills/
 !.agents/skills/DeepPaperNote/
 !.agents/skills/DeepPaperNote/**
+!.agents/skills/zotero-pdf-sync/
+!.agents/skills/zotero-pdf-sync/**
 
 # Keep skill-specific output not covered by the global rules below out of the vault.
 .agents/skills/DeepPaperNote/site/.astro/
@@ -25,21 +27,21 @@
 .agents/skills/DeepPaperNote/build/
 *.egg-info/
 
-# DeepPaperNote Obsidian outputs.
-!Research/
-!Research/论文导航.md
-!Research/论文库.base
-!Research/*/
-!Research/*/笔记.md
-!Research/*/images/
-!Research/*/images/*.png
-!Research/*/images/*.jpg
-!Research/*/images/*.jpeg
-!Research/*/images/*.webp
-!Research/*/images/*.gif
-!Research/*/images/*.svg
+# Obsidian outputs mirror the Zotero collection hierarchy under 文献/.
+!文献/
+!文献/论文导航.md
+!文献/论文库.base
+!文献/**/
+!文献/**/笔记.md
+!文献/**/images/
+!文献/**/images/*.png
+!文献/**/images/*.jpg
+!文献/**/images/*.jpeg
+!文献/**/images/*.webp
+!文献/**/images/*.gif
+!文献/**/images/*.svg
 
-# Local machine state and private data.
+# Local machine state and private data, including the Zotero mirror index and reports.
 .local/
 .env
 .env.*

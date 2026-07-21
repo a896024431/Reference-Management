@@ -1,7 +1,7 @@
 interface:
   display_name: "DeepPaperNote"
-  short_description: "为单篇论文生成证据优先的 Obsidian 深读笔记"
-  default_prompt: "Use $deeppapernote to turn one paper into a verified Chinese deep-reading note and publish it into this Obsidian vault."
+  short_description: "从本地镜像 PDF 生成证据优先的论文深读笔记"
+  default_prompt: "Use $deeppapernote to turn one local PDF under 文献 into a verified Chinese deep-reading note beside that paper."
 
 policy:
   allow_implicit_invocation: true

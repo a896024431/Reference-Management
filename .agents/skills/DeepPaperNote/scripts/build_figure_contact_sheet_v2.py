@@ -63,8 +63,8 @@ def _validate_run_dir(run_dir: Path, run_id: str) -> Path:
     matches = any(lowered[index : index + 4] == sequence for index in range(len(lowered) - 3))
     if not matches or resolved.name != run_id:
         raise ContactSheetError("Contact sheets must stay under .local/deeppapernote/runs/<run_id>")
-    if any(part.casefold() == "research" for part in resolved.parts):
-        raise ContactSheetError("Contact sheets must never be written under Research")
+    if any(part.casefold() in {"research", "\u6587\u732e"} for part in resolved.parts):
+        raise ContactSheetError("Contact sheets must never be written under a paper library")
     return resolved
 
 

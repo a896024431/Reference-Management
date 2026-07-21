@@ -103,7 +103,7 @@ def test_manifest_to_materialize_round_trip_is_hash_verified(tmp_path: Path) -> 
     assert len(materialized) == 1
     copied = destination / asset["filename"]
     assert copied.read_bytes() == source.read_bytes()
-    note = f"![[Research/Test/images/{asset['filename']}]]"
+    note = f"![[文献/QPC/Test/images/{asset['filename']}]]"
     assert figure_note_alignment_issues(note, decisions, materialized=materialized) == []
 
 

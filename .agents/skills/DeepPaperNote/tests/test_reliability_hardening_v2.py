@@ -20,7 +20,7 @@ from contracts_v2 import (
     validate_run_id,
 )
 from extract_evidence_v2 import build_contract_evidence
-from lint_note_v2 import build_release_lint
+from lint_note_v2 import SOURCE_ANCHOR_RE, build_release_lint
 from paper_record_v2 import create_explicit_record, fetch_stage, resolve_stage
 from publish_note_v2 import (
     expected_evidence_level,
@@ -731,6 +731,43 @@ def test_lint_requires_an_anchor_on_each_key_claim() -> None:
 
     assert "key_claim_missing_source_anchor:1" in lint["failures"]
     assert not lint["passes_traceability_gate"]
+
+
+def test_lint_accepts_supported_source_anchor_forms() -> None:
+    note = note_text().replace(
+        "- 测量温度为二十毫开尔文〔主文 p. 2〕。",
+        "- 测量温度为二十毫开尔文。",
+    )
+    note = note.replace("主文 p. 1", "补充材料第 9–13 页")
+    note = note.replace("主文 p. 2", "主文 pp. 3–4")
+
+    lint = build_release_lint(note, _context())
+
+    assert all(
+        SOURCE_ANCHOR_RE.search(anchor)
+        for anchor in ("主文 p. 3", "主文 pp. 3–4", "补充材料第 9 页", "补充材料第 9–13 页")
+    )
+    assert lint["source_anchor_count"] == 3
+    assert lint["unanchored_key_claims"] == []
+    assert "fewer_than_three_source_anchors" not in lint["failures"]
+
+
+def test_lint_does_not_override_a_specific_note_type_with_legacy_generic_record() -> None:
+    legacy_record, _, _ = context_bundle()
+    legacy_record["paper_record"]["metadata"]["paper_type"] = "generic"
+    legacy_lint = build_release_lint(note_text(), legacy_record)
+
+    specific_record, _, _ = context_bundle()
+    specific_record["paper_record"]["metadata"]["paper_type"] = "theoretical_physics"
+    specific_lint = build_release_lint(note_text(), specific_record)
+
+    assert not any(
+        failure.startswith("paper_type_mismatch:") for failure in legacy_lint["failures"]
+    )
+    assert (
+        "paper_type_mismatch:experimental_physics:theoretical_physics"
+        in specific_lint["failures"]
+    )
 
 
 def test_lint_rejects_broken_internal_heading_links() -> None:

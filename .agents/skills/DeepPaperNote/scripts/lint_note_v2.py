@@ -140,7 +140,9 @@ def _section(body: str, title: str) -> str:
     return match.group(1) if match else ""
 
 
-SOURCE_ANCHOR_RE = re.compile(r"(?:主文|补充材料)\s+p\.\s*\d+")
+SOURCE_ANCHOR_RE = re.compile(
+    r"(?:主文|补充材料)\s*(?:p{1,2}\.\s*\d+(?:\s*[-–—]\s*\d+)?|第\s*\d+(?:\s*[-–—]\s*\d+)?\s*页)"
+)
 LATEX_COMMAND_RE = re.compile(
     r"(?<!\\)\\(?:alpha|beta|gamma|delta|epsilon|theta|lambda|mu|nu|xi|pi|rho|"
     r"sigma|tau|phi|chi|psi|omega|frac|sqrt|sum|prod|int|mathcal|mathrm|mathbf|"
@@ -282,7 +284,10 @@ def build_release_lint(
 
     expected_type = _paper_type(context)
     actual_type = str(parsed.properties.get("paper_type", ""))
-    if actual_type and expected_type and actual_type != expected_type:
+    legacy_generic_record = (
+        context.get("artifact_type") == "paper_record" and expected_type == "generic"
+    )
+    if actual_type and expected_type and actual_type != expected_type and not legacy_generic_record:
         failures.append(f"paper_type_mismatch:{actual_type}:{expected_type}")
     if expected_type != "ai_method":
         leaked = [phrase for phrase in AI_LEAKAGE if phrase in body]

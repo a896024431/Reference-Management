@@ -15,6 +15,7 @@ from vault import (  # noqa: E402
     BASE_PATH,
     build_note_index,
     discover_notes,
+    folder_title_matches,
     lint_vault,
     paper_local_image_names,
     parse_base_definition,
@@ -47,6 +48,10 @@ def test_reader_images_must_be_reviewed_paper_local_embeds() -> None:
     assert "html_image_embed_forbidden" in failures
 
 
+def test_folder_title_match_accepts_zotero_windows_safe_name() -> None:
+    assert folder_title_matches("A <B>|C?D*", "A B C D")
+
+
 def valid_properties(title: str = "Paper One") -> dict[str, object]:
     return {
         "type": "paper",
@@ -70,7 +75,7 @@ def valid_properties(title: str = "Paper One") -> dict[str, object]:
 def base_text() -> str:
     return """filters:
   and:
-    - 'file.inFolder("Research")'
+    - 'file.inFolder("文献")'
     - 'file.name == "笔记"'
 views:
   - type: table
@@ -83,7 +88,7 @@ views:
 
 
 def build_vault(root: Path, *, with_image: bool = False) -> Path:
-    paper_dir = root / "Research" / "Paper One"
+    paper_dir = root / "文献" / "QPC" / "Paper One"
     image_dir = paper_dir / "images"
     image_dir.mkdir(parents=True)
     image_block = ""
@@ -92,9 +97,9 @@ def build_vault(root: Path, *, with_image: bool = False) -> Path:
         image_block = "\n![[images/fig-1.png]]\n"
     note = render_frontmatter(valid_properties()) + "\n# 论文一\n" + image_block
     (paper_dir / "笔记.md").write_text(note, encoding="utf-8")
-    (root / "Research" / "论文库.base").write_text(base_text(), encoding="utf-8")
-    (root / "Research" / "论文导航.md").write_text(
-        "# 论文导航\n\n![[论文库.base]]\n\n- [[Research/Paper One/笔记|论文一]]\n",
+    (root / BASE_PATH).write_text(base_text(), encoding="utf-8")
+    (root / "文献" / "论文导航.md").write_text(
+        "# 论文导航\n\n![[论文库.base]]\n\n- [[文献/QPC/Paper One/笔记|论文一]]\n",
         encoding="utf-8",
     )
     return paper_dir / "笔记.md"
@@ -134,6 +139,29 @@ class FrontmatterTests(unittest.TestCase):
         codes = {issue["code"] for issue in validate_frontmatter_properties(properties)}
         self.assertIn("local_source_absolute", codes)
 
+    def test_contract_requires_safe_mirrored_pdf_paths(self) -> None:
+        properties = valid_properties()
+        properties["local_pdf"] = "文献/../../outside.pdf"
+        properties["supplement_pdfs"] = ["file:///tmp/supplement.pdf"]
+
+        codes = {issue["code"] for issue in validate_frontmatter_properties(properties)}
+
+        self.assertIn("local_source_path_invalid", codes)
+
+        properties["local_pdf"] = "文献/QPC/Paper One/main.pdf"
+        properties["supplement_pdfs"] = ["文献/QPC/Paper One/si.pdf"]
+        safe_codes = {issue["code"] for issue in validate_frontmatter_properties(properties)}
+        self.assertNotIn("local_source_path_invalid", safe_codes)
+
+    def test_contract_rejects_runtime_zotero_identity_fields(self) -> None:
+        properties = valid_properties()
+        properties["zotero_key"] = "ABCD1234"
+        properties["zotero_uri"] = "zotero://select/library/items/ABCD1234"
+
+        codes = {issue["code"] for issue in validate_frontmatter_properties(properties)}
+
+        self.assertIn("property_unknown", codes)
+
 class LinkResolutionTests(unittest.TestCase):
     def test_resolves_alias_and_doi(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -167,7 +195,7 @@ class BaseDefinitionTests(unittest.TestCase):
         definition = parse_base_definition(base_text())
         self.assertEqual(
             definition.global_filters,
-            ('file.inFolder("Research")', 'file.name == "\u7b14\u8bb0"'),
+            ('file.inFolder("文献")', 'file.name == "\u7b14\u8bb0"'),
         )
         self.assertEqual(
             definition.views,
@@ -185,7 +213,7 @@ class BaseDefinitionTests(unittest.TestCase):
             fake_base = """filters:
   and:
     - 'type == "paper"'
-# - 'file.inFolder("Research")'
+# - 'file.inFolder("文献")'
 # - 'file.name == "\u7b14\u8bb0"'
 views:
   - type: table
@@ -226,6 +254,60 @@ class VaultLintTests(unittest.TestCase):
                 report["status"], "pass", json.dumps(report["issues"], ensure_ascii=False)
             )
 
+    def test_nested_pdf_only_directory_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            paper_dir = root / "文献" / "制备工艺" / "EFLAO" / "Unread Paper"
+            paper_dir.mkdir(parents=True)
+            (paper_dir / "main.pdf").write_bytes(b"local PDF placeholder")
+            (root / BASE_PATH).write_text(base_text(), encoding="utf-8")
+            (root / "文献" / "论文导航.md").write_text(
+                "# 论文导航\n\n![[论文库.base]]\n",
+                encoding="utf-8",
+            )
+
+            report = lint_vault(root)
+
+            self.assertEqual(
+                report["status"], "pass", json.dumps(report["issues"], ensure_ascii=False)
+            )
+            self.assertEqual(report["summary"]["notes"], 0)
+
+    def test_shallow_paper_directories_are_rejected_without_skipping_descendants(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            build_vault(root)
+            standalone = root / "文献" / "Standalone Paper"
+            standalone.mkdir()
+            (standalone / "main.pdf").write_bytes(b"local PDF placeholder")
+            collection = root / "文献" / "QPC"
+            (collection / "collection-level.pdf").write_bytes(b"local PDF placeholder")
+
+            report = lint_vault(root)
+            shallow_paths = {
+                issue["path"]
+                for issue in report["issues"]
+                if issue["code"] == "paper_directory_shallow"
+            }
+            qpc_extra_entries = [
+                issue
+                for issue in report["issues"]
+                if issue["code"] == "paper_directory_extra_entry" and issue["path"] == "文献/QPC"
+            ]
+
+            self.assertEqual(shallow_paths, {"文献/Standalone Paper", "文献/QPC"})
+            self.assertEqual(qpc_extra_entries, [])
+
+    def test_legacy_research_directory_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            build_vault(root)
+            (root / "Research").mkdir()
+
+            codes = {issue["code"] for issue in lint_vault(root)["issues"]}
+
+            self.assertIn("legacy_research_directory_present", codes)
+
     def test_broken_link_and_missing_navigation_entry_fail(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -233,7 +315,7 @@ class VaultLintTests(unittest.TestCase):
             note_path.write_text(
                 note_path.read_text(encoding="utf-8") + "\n[[Missing Paper]]\n", encoding="utf-8"
             )
-            (root / "Research" / "论文导航.md").write_text(
+            (root / "文献" / "论文导航.md").write_text(
                 "# 论文导航\n\n![[论文库.base]]\n", encoding="utf-8"
             )
             codes = {issue["code"] for issue in lint_vault(root)["issues"]}
@@ -244,7 +326,7 @@ class VaultLintTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             note_path = build_vault(root)
-            local_pdf_target = "\u6587\u732e/1/local-only.pdf"
+            local_pdf_target = "\u6587\u732e/QPC/Paper One/local-only.pdf"
             note_path.write_text(
                 note_path.read_text(encoding="utf-8")
                 + f"\n[[{local_pdf_target}|Local PDF]]\n[[Missing Paper]]\n",
@@ -265,6 +347,24 @@ class VaultLintTests(unittest.TestCase):
             self.assertEqual(strict_targets, {local_pdf_target, "Missing Paper"})
             self.assertEqual(ci_targets, {"Missing Paper"})
 
+    def test_ci_mode_does_not_allow_path_traversal_disguised_as_a_local_pdf_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            note_path = build_vault(root)
+            traversal = "文献/../../outside.pdf"
+            note_path.write_text(
+                note_path.read_text(encoding="utf-8") + f"\n[[{traversal}|unsafe]]\n",
+                encoding="utf-8",
+            )
+
+            ci_targets = {
+                issue["details"].get("target")
+                for issue in lint_vault(root, allow_missing_local_pdfs=True)["issues"]
+                if issue["code"] == "wikilink_broken"
+            }
+
+            self.assertIn(traversal, ci_targets)
+
     def test_runtime_status_and_absolute_path_fail(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -282,7 +382,7 @@ class VaultLintTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             build_vault(root)
-            image_path = root / "Research" / "Paper One" / "images" / "orphan.png"
+            image_path = root / "文献" / "QPC" / "Paper One" / "images" / "orphan.png"
             image_path.write_bytes(b"not a png")
             report = lint_vault(root)
             codes = {issue["code"] for issue in report["issues"]}
@@ -293,7 +393,7 @@ class VaultLintTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             build_vault(root)
-            stray_images = root / "Research" / "No Note" / "images"
+            stray_images = root / "文献" / "QPC" / "No Note" / "images"
             stray_images.mkdir(parents=True)
             (stray_images / "orphan.png").write_bytes(b"not a png")
 
@@ -309,7 +409,7 @@ class VaultLintTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             build_vault(root)
-            image_path = root / "Research" / "Paper One" / "images" / "fake.png"
+            image_path = root / "文献" / "QPC" / "Paper One" / "images" / "fake.png"
             image_path.write_bytes(b"\x89PNG\r\n\x1a\nnot-pixels-IEND")
 
             self.assertTrue(validate_image_file(image_path).startswith("raster_decode_failed:"))
@@ -367,7 +467,7 @@ class VaultLintTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             build_vault(root, with_image=True)
-            image_path = root / "Research" / "Paper One" / "images" / "fig-1.png"
+            image_path = root / "文献" / "QPC" / "Paper One" / "images" / "fig-1.png"
             self.assertEqual(validate_image_file(image_path), "")
             image_issues = [
                 issue

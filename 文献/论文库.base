@@ -1,6 +1,6 @@
 filters:
   and:
-    - file.inFolder("Research")
+    - file.inFolder("文献")
     - file.name == "笔记"
     - type == "paper"
 properties:

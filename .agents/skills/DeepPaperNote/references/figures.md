@@ -4,7 +4,7 @@
 
 figure manifest、decisions、contact sheet 与视觉复核属于本地处理记录。永久笔记只面向读者，只能出现通过来源与可用性强制检查的真实图片、原始 Fig./Table 编号和自然图注。
 
-不得把可见 placeholder、候选 ID、裁剪坐标、内容指纹、建议位置、QA 术语或隐藏 figure 注释写进 `Research/`。
+不得把可见 placeholder、候选 ID、裁剪坐标、内容指纹、建议位置、QA 术语或隐藏 figure 注释写进 `文献/`。
 
 ## 决策流程
 

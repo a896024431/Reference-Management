@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zotero PDF Sync"
+  short_description: "将 Zotero 本地 PDF 手动镜像到 Obsidian 文献目录"
+  default_prompt: "Use $zotero-pdf-sync to mirror PDFs from Zotero's ZJU/课题组 collection into this Obsidian vault."

@@ -2,13 +2,17 @@
 
 ## 永久目录
 
-每篇论文固定为：
+Zotero PDF 先由 `$zotero-pdf-sync` 镜像到 Vault。`我的文库 / ZJU / 课题组` 对应 `文献/`，每篇论文为：
 
-    Research/<canonical title>/
-      笔记.md
-      images/  # 仅在有可靠图片时存在
+    文献/<一个或多个分类>/<canonical title>/
+      <main>.pdf
+      <SI>.pdf                 # 可选，可有多份
+      笔记.md                  # 仅已完成精读时存在
+      images/                  # 仅在有可靠图片时存在
 
-标题只移除文件系统不允许的字符，不添加领域目录。同名目录只有在强标识相同，或 authors 与 year 都一致时才允许更新。无可靠图片时只保留 `笔记.md`，因为 Git 不同步空目录。`Research/` 顶层不得残留无笔记目录、发布临时目录或额外文件；正式目录不得包含 manifest、候选图、PDF、非图片资产或临时文件。
+分类目录和只含 PDF 的论文目录都是合法的，不生成空笔记目录。题名只移除文件系统不允许的字符；同分类出现相同题名时同步器会使用稳定 Zotero key 区分目录。正式笔记目录只允许 PDF、`笔记.md` 与可选 `images/`；不得包含 manifest、候选图、运行时 JSON、其他文档或临时文件。
+
+`Research/` 是迁移前的旧布局；正式 Vault 中不得残留它。
 
 ## Frontmatter
 
@@ -18,21 +22,23 @@
 
 `evidence_level` 只允许 `full_text`、`full_text_supplement`。`note_status` 的 Vault 枚举保留 `draft`、`reviewed`、`polished`、`degraded` 以兼容历史手工内容，但正式发布程序只接受 `polished`。`figure_status` 允许 `complete`、`partial`、`placeholder_only`、`none_needed`。
 
-发布程序从已完整解析的 documents 推导 evidence level，从 figure decisions 推导 figure status；手写值不一致时拒绝发布。
+发布程序从已完整解析的本地 documents 推导 evidence level，从 figure decisions 推导 figure status；手写值不一致时拒绝发布。
 
-`date`、`doi`、`arxiv`、`source_url`、`local_pdf`、`supplement_pdfs`、`methods`、`materials`、`code_url`、`project_url`、`zotero_key`、`zotero_uri` 只在有值时写入。本地来源只允许 Vault 相对路径。
+`date`、`doi`、`arxiv`、`source_url`、`local_pdf`、`supplement_pdfs`、`methods`、`materials`、`code_url`、`project_url` 只在有值时写入。本地来源只允许 Vault 相对路径；正式笔记不依赖 Zotero key、URI 或本机绝对路径。
 
 ## 链接与导航
 
 先按目录标题、`title`、`title_zh`、aliases 和 DOI 建索引。唯一命中时使用：
 
-    [[Research/Canonical Paper Title/笔记|可读标题]]
+    [[文献/QPC/Canonical Paper Title/笔记|可读标题]]
 
-没有唯一命中时保留纯文本，不猜测路径。`Research/论文库.base` 是属性数据库；`Research/论文导航.md` 嵌入 Base 并提供真实链接。
+没有唯一命中时保留纯文本，不猜测路径。`文献/论文库.base` 是属性数据库；`文献/论文导航.md` 嵌入 Base 并提供真实链接。
 
 ## 安全发布与本地记录
 
-发布前，待发布目录顶层必须恰好是 `笔记.md` 与 `images/`。发布程序先在 `Research/` 下准备完整的新目录，确认准备完成后再替换旧目录；随后重算最终笔记与图片指纹、原子重建导航并执行严格 Vault lint。最终检查或审计写入失败时恢复旧论文目录和导航。backup 不得放入 `Research/`，报告写在 Vault 内时只能进入 `.local/`；正式目录在没有发布图片时省略 `images/`。
+发布主文必须位于 `文献/<分类>/<论文目录>/`，并以该主文的父目录作为目标。发布器先在 `.local/` 中准备和验证新的 `笔记.md` 与 `images/`，再仅替换这两个受管内容；同目录 PDF/SI 的路径、字节和名称不得发生变化。已有笔记时会验证论文身份；首次向仅含 PDF 的目录发布合法。
+
+最终检查或审计写入失败时只恢复旧笔记和图片，绝不清理论文目录或附件。backup 不得放入 `文献/`，报告写在 Vault 内时只能进入 `.local/`。
 
 发布使用的 paper/evidence/note-plan/lint/reviews/figure/contact-sheet/visual-review/report 归档到：
 
@@ -42,6 +48,6 @@
 
 ## 本地与 Git 边界
 
-`.local/`、`.obsidian/`、PDF、Zotero 数据库、密钥、缓存与临时文件不进入 Git。Git 只同步根说明、DeepPaperNote skill、正式 workflow、论文导航、论文笔记、Base 和笔记使用的常见图片。
+`.local/`、`.obsidian/`、PDF、Zotero 数据库、密钥、缓存与临时文件不进入 Git。Git 只同步根说明、两个 repo-local skill、正式 workflow、论文导航、论文笔记、Base 和笔记使用的常见图片。
 
 正常发布事务内部运行导航重建与 Vault lint；独立维护时使用 `rebuild_paper_navigation.py --check` 和 `lint_vault.py`。Vault lint 必须通过属性枚举、目录形状、绝对路径、链接、embed、图片实际解码、孤儿图片、导航覆盖和读者可见流程元数据检查。

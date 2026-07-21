@@ -25,23 +25,24 @@ from figure_contracts_v2 import normalize_figure_decisions, normalize_figure_man
 
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
-    source = command.add_mutually_exclusive_group(required=True)
-    source.add_argument(
+    command.add_argument(
         "--input",
-        help="Local main PDF, DOI, arXiv id, unique title, or DOI/arXiv/direct-PDF URL.",
-    )
-    source.add_argument(
-        "--input-record",
-        help="Explicit JSON with title, main_pdf/documents, and supplement_pdfs.",
+        required=True,
+        help="Local main PDF already mirrored under 文献/.",
     )
     command.add_argument("--run-id", default="")
-    command.add_argument("--workdir", default=".local/deeppapernote/runs")
-    command.add_argument("--vault-root", default="")
+    command.add_argument(
+        "--workdir",
+        default="",
+        help="Run-local directory; defaults to <vault>/.local/deeppapernote/runs.",
+    )
+    command.add_argument("--vault-root", required=True)
     command.add_argument("--supplement", action="append", default=[])
     command.add_argument(
         "--offline",
         action="store_true",
-        help="Require local documents and disable metadata queries and URL downloads.",
+        required=True,
+        help="Required: process only local PDFs and disable metadata queries and downloads.",
     )
     command.add_argument("--max-pages", type=int, default=0, help="0 means all pages.")
     return command
@@ -60,10 +61,47 @@ def validate_environment(args: argparse.Namespace) -> None:
         raise SystemExit(f"PyMuPDF/fitz cannot be imported: {exc}") from exc
     if args.max_pages < 0:
         raise SystemExit("--max-pages must be non-negative")
-    if args.vault_root:
-        root = Path(args.vault_root).expanduser().resolve()
-        if not root.exists() or not root.is_dir():
-            raise SystemExit(f"--vault-root is not a directory: {root}")
+    root = Path(args.vault_root).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise SystemExit(f"--vault-root is not a directory: {root}")
+    library = root / "文献"
+    if not library.is_dir():
+        raise SystemExit(f"Vault does not contain the mirrored 文献/ library: {library}")
+
+    def local_pdf(value: str, *, label: str) -> Path:
+        path = Path(value).expanduser().resolve()
+        try:
+            relative = path.relative_to(library.resolve())
+        except ValueError as exc:
+            raise SystemExit(f"{label} must be a local PDF under 文献/: {path}") from exc
+        if not path.is_file() or path.suffix.casefold() != ".pdf" or len(relative.parts) < 3:
+            raise SystemExit(
+                f"{label} must be a PDF in 文献/<collection>/<paper>/: {path}"
+            )
+        return path
+
+    main_pdf = local_pdf(args.input, label="--input")
+    seen = {main_pdf}
+    for index, supplement in enumerate(args.supplement, start=1):
+        supplement_pdf = local_pdf(supplement, label=f"--supplement[{index}]")
+        if supplement_pdf.parent != main_pdf.parent:
+            raise SystemExit("All supplementary PDFs must be in the main PDF's paper directory")
+        if supplement_pdf in seen:
+            raise SystemExit("Main and supplementary PDFs must not be repeated")
+        seen.add(supplement_pdf)
+
+    local_runs = (root / ".local" / "deeppapernote" / "runs").resolve()
+    workdir = Path(args.workdir).expanduser().resolve() if args.workdir else local_runs
+    try:
+        workdir.relative_to(local_runs)
+    except ValueError as exc:
+        raise SystemExit(
+            "--workdir must stay under <vault>/.local/deeppapernote/runs/"
+        ) from exc
+    args.input = str(main_pdf)
+    args.supplement = [str(Path(value).expanduser().resolve()) for value in args.supplement]
+    args.vault_root = str(root)
+    args.workdir = str(workdir)
 
 
 def require_pass(path: Path, *, artifact_type: str) -> dict[str, Any]:
@@ -149,92 +187,65 @@ def main() -> None:
         "run_manifest": run_dir / "run_manifest.json",
     }
     try:
-        if args.input_record:
-            command = [
-                python,
-                str(scripts / "paper_record_v2.py"),
-                "--stage",
-                "explicit",
-                "--input",
-                args.input_record,
-                "--run-id",
-                run_id,
-                "--output",
-                str(paths["paper_record"]),
-            ]
-            if args.vault_root:
-                command.extend(["--vault-root", args.vault_root])
-            for supplement in args.supplement:
-                command.extend(["--supplement", supplement])
-            run(
-                command,
-                stage="create_paper_record",
-                log=log,
-                artifact_path=paths["paper_record"],
-            )
-            require_pass(paths["paper_record"], artifact_type="paper_record")
-        else:
-            resolved = run_dir / "paper_record.resolved.json"
-            metadata = run_dir / "paper_record.metadata.json"
-            resolve_command = [
-                python,
-                str(scripts / "paper_record_v2.py"),
-                "--stage",
-                "resolve",
-                "--input",
-                str(args.input),
-                "--run-id",
-                run_id,
-                "--output",
-                str(resolved),
-                *(["--vault-root", args.vault_root] if args.vault_root else []),
-            ]
-            if args.offline:
-                resolve_command.append("--offline")
-            run(resolve_command, stage="resolve_paper", log=log, artifact_path=resolved)
-            metadata_command = [
-                python,
-                str(scripts / "paper_record_v2.py"),
-                "--stage",
-                "metadata",
-                "--input",
-                str(resolved),
-                "--output",
-                str(metadata),
-            ]
-            if args.offline:
-                metadata_command.append("--offline")
-            run(
-                metadata_command,
-                stage="collect_metadata",
-                log=log,
-                artifact_path=metadata,
-            )
-            fetch_command = [
-                python,
-                str(scripts / "paper_record_v2.py"),
-                "--stage",
-                "fetch",
-                "--input",
-                str(metadata),
-                "--dest-dir",
-                str(run_dir / "pdfs"),
-                "--output",
-                str(paths["paper_record"]),
-            ]
-            for supplement in args.supplement:
-                fetch_command.extend(["--supplement", supplement])
-            if args.vault_root:
-                fetch_command.extend(["--vault-root", args.vault_root])
-            if args.offline:
-                fetch_command.append("--offline")
-            run(
-                fetch_command,
-                stage="fetch_pdf",
-                log=log,
-                artifact_path=paths["paper_record"],
-            )
-            require_pass(paths["paper_record"], artifact_type="paper_record")
+        resolved = run_dir / "paper_record.resolved.json"
+        metadata = run_dir / "paper_record.metadata.json"
+        resolve_command = [
+            python,
+            str(scripts / "paper_record_v2.py"),
+            "--stage",
+            "resolve",
+            "--input",
+            str(args.input),
+            "--run-id",
+            run_id,
+            "--output",
+            str(resolved),
+            "--vault-root",
+            args.vault_root,
+            "--offline",
+        ]
+        run(resolve_command, stage="resolve_paper", log=log, artifact_path=resolved)
+        metadata_command = [
+            python,
+            str(scripts / "paper_record_v2.py"),
+            "--stage",
+            "metadata",
+            "--input",
+            str(resolved),
+            "--output",
+            str(metadata),
+            "--offline",
+        ]
+        run(
+            metadata_command,
+            stage="collect_metadata",
+            log=log,
+            artifact_path=metadata,
+        )
+        fetch_command = [
+            python,
+            str(scripts / "paper_record_v2.py"),
+            "--stage",
+            "fetch",
+            "--input",
+            str(metadata),
+            "--dest-dir",
+            str(run_dir / "pdfs"),
+            "--output",
+            str(paths["paper_record"]),
+            "--vault-root",
+            args.vault_root,
+            "--offline",
+        ]
+        for supplement in args.supplement:
+            fetch_command.extend(["--supplement", supplement])
+        run(
+            fetch_command,
+            stage="record_local_pdfs",
+            log=log,
+            artifact_path=paths["paper_record"],
+        )
+        require_pass(paths["paper_record"], artifact_type="paper_record")
 
         run(
             [

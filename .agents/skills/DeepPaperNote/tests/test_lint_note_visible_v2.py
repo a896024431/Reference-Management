@@ -11,14 +11,14 @@ from note_lint_core import mixed_language_issues, suspicious_mid_sentence_linebr
 def test_visible_prose_ignores_frontmatter_link_targets_and_inline_math() -> None:
     text = """---
 title: Long English title in a local paper collection
-local_pdf: 文献/9/Universal chiral Luttinger liquid behavior in graphene.pdf
+local_pdf: 文献/QPC/Universal chiral Luttinger liquid behavior in graphene/main.pdf
 ---
 
 # 中文题名
 
 这里的 $G=\\mathrm dI/\\mathrm dV\\propto V^2$ 是微分电导。
 
-- [[Research/A very long English paper title/笔记|相关中文笔记]]：用于比较。
+- [[文献/QPC/A very long English paper title/笔记|相关中文笔记]]：用于比较。
 """
     prose = visible_prose(text)
     assert "local_pdf" not in prose

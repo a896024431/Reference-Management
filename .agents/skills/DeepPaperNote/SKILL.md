@@ -1,11 +1,13 @@
 ---
 name: deeppapernote
-description: Generate an evidence-first Chinese deep-reading note for one paper and publish it into an Obsidian vault. Use when the user provides a local PDF, Zotero item, DOI, arXiv ID, uniquely resolvable title, or DOI/arXiv/direct-PDF URL and asks for a rigorous Markdown research note with verified figures.
+description: Generate or explicitly revise an evidence-first Chinese deep-reading note for one named locally mirrored PDF under 文献/ and publish it beside that paper in this Obsidian vault. Use only when the user names a local main PDF (and optional local supplementary PDFs) and asks to create or revise that paper's rigorous Markdown research note with verified figures; do not use for Zotero sync, project maintenance, directory changes, or unchanged completed notes.
 ---
 
 # DeepPaperNote
 
 一次只处理一篇论文。目标是生成可长期复用、证据可追溯的中文深读笔记，而不是摘要改写。
+
+已完成笔记默认冻结。Zotero 同步、项目维护、目录调整和链接修复不会触发本 skill，也不会要求重新读取 PDF、复核或发布；只有用户明确点名要求新建或修改某篇笔记时才运行。
 
 ## 必读路由
 
@@ -14,13 +16,13 @@ description: Generate an evidence-first Chinese deep-reading note for one paper 
 - 选择、裁剪或发布图表前读 `references/figures.md`。
 - 写入 Obsidian、构建链接或发布前读 `references/vault.md`。
 
-## 来源优先级
+## 输入边界
 
-依次使用用户本地 PDF、可信 Zotero 本地附件、DOI/出版社或 arXiv 开放全文；Semantic Scholar、OpenAlex 等只补元数据。直接 PDF URL 可以下载，但必须从 PDF 元数据或首页恢复可靠题名；不含 DOI 的普通文章页不抓取 HTML，改请用户提供 DOI 或 PDF。Zotero 只读探测，不自动安装集成，也不把运行时状态写进笔记。
+正式输入只能是 Vault `文献/` 中某篇论文目录的本地主文 PDF；补充材料也从同一目录提供。先用 `$zotero-pdf-sync` 手动镜像 Zotero PDF，再在本地离线完成精读。日常笔记流程不得查询 Zotero API、SQLite、DOI、arXiv、出版社或其他网络来源，也不把运行时状态写进笔记。
 
-标题检索只有在 DOI、arXiv 或标题/年份去重后剩下唯一可信身份时才能继续；多个候选时停止并请用户提供 DOI、arXiv URL、直接 PDF URL 或本地 PDF。
+主文必须位于 `文献/<一个或多个分类>/<论文目录>/`，并在发布时以其父目录作为正式输出目录。无法确认本地主文或需要联网补全文时停止，请用户先完成镜像。
 
-## 唯一正式流程
+## 明确笔记任务的正式流程
 
 当前 Windows Vault 统一使用 Miniconda 环境 `deeppapernote`。非交互命令使用 `conda run --no-capture-output -n deeppapernote python ...` 并顺序执行，不得混用裸 `python`、裸 `pip` 或临时 Python 环境。环境必须满足 Python 3.10 或更高版本、PyMuPDF/`fitz` 可导入且 Python UTF-8 mode 已启用；其他平台或 CI 使用满足同样条件的等价环境。
 
@@ -36,9 +38,7 @@ description: Generate an evidence-first Chinese deep-reading note for one paper 
 8. `scripts/record_figure_visual_review_v2.py`
 9. `scripts/publish_note_v2.py`；它在同一最终事务中重建导航、执行 Vault lint 并写完成凭证
 
-`run_pipeline_v2.py` 接受 `--input` 或 `--input-record`，并保留 `--run-id`、`--workdir`、`--vault-root`、`--supplement`、`--offline`、`--max-pages`。`run_id` 必须是小写、安全且非 Windows 保留名的单个目录名；`--offline` 只接受本地 PDF 或带本地文档的可信 input record，并禁止元数据查询和 URL 下载。所有中间文件写入 `.local/deeppapernote/runs/<run_id>/`。
-
-需要把可信元数据与已定位的本地主文路径写成 input record 时使用 `scripts/create_input_record.py`；Zotero 命中但未暴露附件路径时可用 `scripts/locate_zotero_attachment.py`。
+`run_pipeline_v2.py` 的正式调用使用本地 `--input`、必需的 `--vault-root`、`--offline`，以及可重复的本地 `--supplement`；保留 `--run-id`、`--workdir` 和 `--max-pages`。`run_id` 必须是小写、安全且非 Windows 保留名的单个目录名。所有中间文件写入 `.local/deeppapernote/runs/<run_id>/`。
 
 ## 不可绕过的强制检查
 
@@ -56,6 +56,6 @@ description: Generate an evidence-first Chinese deep-reading note for one paper 
 
 ## 输出与 Git
 
-正式目录固定为 `Research/<规范标题>/笔记.md`，有可靠图片时使用同级 `images/`。本地处理记录只写入 `.local/deeppapernote/published/<run_id>/`。永久笔记不得出现候选 ID、裁剪坐标、内容指纹、QA 状态、可见 placeholder、运行时消息或本机绝对路径。
+正式目录固定为输入主文同级的 `文献/<分类>/<规范标题>/笔记.md`，有可靠图片时使用同级 `images/`；同目录 PDF/SI 必须原样保留。发布器只管理 `笔记.md` 与 `images/`。本地处理记录只写入 `.local/deeppapernote/published/<run_id>/`。永久笔记不得出现候选 ID、裁剪坐标、内容指纹、QA 状态、可见 placeholder、运行时消息或本机绝对路径。
 
 只有发布器返回包含导航指纹和通过状态 Vault lint 的完成凭证后，才说笔记已完成。它先完整准备新内容，再替换旧版本，并在最终检查失败时恢复旧笔记、导航和审计记录。`rebuild_paper_navigation.py --check` 与 `lint_vault.py` 仍可用于独立维护检查。保存后只提醒用户在 Codex 侧边栏手动同步 GitHub；Codex 不执行 `git add`、`git commit` 或 `git push`。
