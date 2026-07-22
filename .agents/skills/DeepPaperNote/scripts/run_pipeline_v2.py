@@ -20,7 +20,6 @@ from contracts_v2 import (
     utc_run_id,
     validate_run_id,
 )
-from figure_contracts_v2 import normalize_figure_decisions, normalize_figure_manifest
 
 
 def parser() -> argparse.ArgumentParser:
@@ -69,9 +68,7 @@ def validate_environment(args: argparse.Namespace) -> None:
             or len(relative.parts) < 3
             or relative.parts[0].casefold() == "Zotero已删除".casefold()
         ):
-            raise SystemExit(
-                f"{label} must be an active PDF in 文献/<collection>/<paper>/: {path}"
-            )
+            raise SystemExit(f"{label} must be an active PDF in 文献/<collection>/<paper>/: {path}")
         return path
 
     main_pdf = local_pdf(args.input, label="--input")
@@ -146,7 +143,6 @@ def write_plan_template(bundle: dict[str, Any], output: Path) -> None:
         "section_plan": [],
         "evidence_ids": [],
         "key_claims": [],
-        "figure_intents": [],
     }
     emit_json(artifact, output)
 
@@ -155,13 +151,7 @@ def main() -> None:
     args = parser().parse_args()
     validate_environment(args)
     run_id = validate_run_id(args.run_id or utc_run_id())
-    run_dir = (
-        Path(args.vault_root).resolve()
-        / ".local"
-        / "deeppapernote"
-        / "runs"
-        / run_id
-    )
+    run_dir = Path(args.vault_root).resolve() / ".local" / "deeppapernote" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     staging_dir = run_dir / "staging"
     scripts = Path(__file__).resolve().parent
@@ -170,12 +160,9 @@ def main() -> None:
     paths = {
         "paper_record": run_dir / "paper_record.json",
         "evidence_pack": run_dir / "evidence_pack.json",
-        "pdf_assets": run_dir / "pdf_assets.json",
-        "figure_manifest": run_dir / "figure_manifest.json",
-        "figure_plan": run_dir / "figure_plan.json",
-        "figure_decisions": run_dir / "figure_decisions.json",
+        "visual_pages": run_dir / "visual_pages.json",
         "synthesis_bundle": run_dir / "synthesis_bundle.json",
-        "note_plan_template": run_dir / "note_plan.template.json",
+        "note_plan": run_dir / "note_plan.json",
         "run_manifest": run_dir / "run_manifest.json",
     }
     try:
@@ -220,45 +207,20 @@ def main() -> None:
         run(
             [
                 python,
-                str(scripts / "extract_pdf_assets_v2.py"),
-                "--input",
+                str(scripts / "render_visual_pages_v2.py"),
+                "--paper-record",
                 str(paths["paper_record"]),
-                "--assets-dir",
-                str(run_dir / "assets"),
-                "--max-pages",
-                str(args.max_pages),
-                "--output",
-                str(paths["pdf_assets"]),
-            ],
-            stage="extract_pdf_assets",
-            log=log,
-            artifact_path=paths["pdf_assets"],
-        )
-        manifest = normalize_figure_manifest(load_json_object(paths["pdf_assets"]))
-        emit_json(manifest, paths["figure_manifest"])
-        if manifest["status"] == "fail":
-            raise RuntimeError("figure_manifest failed: " + "; ".join(manifest["failures"]))
-        run(
-            [
-                python,
-                str(scripts / "plan_figures_v2.py"),
                 "--evidence",
                 str(paths["evidence_pack"]),
-                "--assets",
-                str(paths["pdf_assets"]),
+                "--run-dir",
+                str(run_dir),
                 "--output",
-                str(paths["figure_plan"]),
+                str(paths["visual_pages"]),
             ],
-            stage="plan_figures",
+            stage="render_visual_pages",
             log=log,
-            artifact_path=paths["figure_plan"],
+            artifact_path=paths["visual_pages"],
         )
-        decisions = normalize_figure_decisions(
-            load_json_object(paths["figure_plan"]),
-            manifest=manifest,
-            require_final=False,
-        )
-        emit_json(decisions, paths["figure_decisions"])
         run(
             [
                 python,
@@ -267,10 +229,8 @@ def main() -> None:
                 str(paths["paper_record"]),
                 "--evidence",
                 str(paths["evidence_pack"]),
-                "--figures",
-                str(paths["figure_decisions"]),
-                "--assets",
-                str(paths["figure_manifest"]),
+                "--visual-pages",
+                str(paths["visual_pages"]),
                 "--output",
                 str(paths["synthesis_bundle"]),
             ],
@@ -279,8 +239,8 @@ def main() -> None:
             artifact_path=paths["synthesis_bundle"],
         )
         bundle = load_json_object(paths["synthesis_bundle"])
-        write_plan_template(bundle, paths["note_plan_template"])
-        (staging_dir / "images").mkdir(parents=True, exist_ok=False)
+        write_plan_template(bundle, paths["note_plan"])
+        staging_dir.mkdir(parents=True, exist_ok=False)
         report = artifact_header(
             "run_manifest",
             paper_id=str(bundle["paper_id"]),
@@ -293,14 +253,8 @@ def main() -> None:
                 "staging_dir": str(staging_dir),
                 "downstream_pending": [
                     "model_note_plan",
-                    "validate_note_plan_v2",
                     "model_note_draft",
-                    "finalize_embedded_figures",
-                    "lint_note_v2",
-                    "quality_review",
-                    "readability_review",
-                    "figure_contact_sheet_if_embedded",
-                    "figure_visual_review_if_embedded",
+                    "second_read",
                     "publish_note_v2",
                 ],
                 "artifacts": {

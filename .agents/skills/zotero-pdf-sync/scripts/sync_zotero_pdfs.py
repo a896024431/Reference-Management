@@ -931,20 +931,18 @@ def sync(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault-root", required=True)
-    parser.add_argument("--root-collection", default=ROOT_COLLECTION)
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--collection", default="")
     source.add_argument("--item-key", default="")
-    parser.add_argument("--api-base", default=API_BASE)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:
-        papers = _collect_papers(args.api_base, args.root_collection, args.collection, args.item_key)
+        papers = _collect_papers(API_BASE, ROOT_COLLECTION, args.collection, args.item_key)
         result = sync(
             Path(args.vault_root),
             papers,
-            args.api_base,
-            args.root_collection,
+            API_BASE,
+            ROOT_COLLECTION,
             args.dry_run,
             complete=not args.collection and not args.item_key,
         )

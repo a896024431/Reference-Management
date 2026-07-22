@@ -516,7 +516,6 @@ NOTE_PLAN_FIELDS = (
     "key_numbers",
     "real_comparisons",
     "section_plan",
-    "figure_intents",
 )
 NOTE_PLAN_ENTRY_FIELDS = {
     "must_cover": "topic",
@@ -524,7 +523,6 @@ NOTE_PLAN_ENTRY_FIELDS = {
     "key_numbers": "number",
     "real_comparisons": "comparison",
     "section_plan": "section",
-    "figure_intents": "target_id",
 }
 NOTE_PLAN_REQUIRED_LISTS = ("must_cover", "key_claims", "section_plan")
 
@@ -615,41 +613,108 @@ def validate_note_plan_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     return artifact
 
 
-QUALITY_SCORE_FIELDS = (
+SECOND_REVIEW_SCORE_FIELDS = (
     "factual_fidelity",
     "completeness",
     "domain_expression",
     "clarity",
-    "traceability",
-)
-READABILITY_SCORE_FIELDS = (
-    "factual_fidelity",
-    "completeness",
-    "domain_expression",
     "chinese_naturalness",
     "navigability",
+    "traceability",
 )
 
 
 REVIEW_ORIGINS = {"subagent", "human"}
+MARKDOWN_HEADING_RE = re.compile(r"(?m)^(?:#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+MARKDOWN_LIST_ITEM_RE = re.compile(r"^[ \t]*(?:[-+*]|\d+[.)])[ \t]+")
 
 
-def validate_review_artifact(
+def _normalized_heading(value: str) -> str:
+    return " ".join(re.sub(r"^#{1,6}[ \t]+", "", value).strip().rstrip("#").split())
+
+
+def _heading_sections(note_text: str) -> list[tuple[str, int, int]]:
+    headings = list(MARKDOWN_HEADING_RE.finditer(note_text))
+    return [
+        (
+            _normalized_heading(match.group(1)),
+            match.end(),
+            headings[index + 1].start() if index + 1 < len(headings) else len(note_text),
+        )
+        for index, match in enumerate(headings)
+    ]
+
+
+def _paragraph_spans(text: str, *, start: int, end: int) -> list[tuple[int, int]]:
+    """Return Markdown paragraph/list-item spans within one heading section."""
+    spans: list[tuple[int, int]] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    position = start
+    for line in text[start:end].splitlines(keepends=True):
+        line_end = position + len(line)
+        stripped = line.strip()
+        is_list_item = bool(MARKDOWN_LIST_ITEM_RE.match(line))
+        if not stripped:
+            if current_start is not None and current_end is not None:
+                spans.append((current_start, current_end))
+            current_start = current_end = None
+        elif is_list_item:
+            if current_start is not None and current_end is not None:
+                spans.append((current_start, current_end))
+            current_start = position
+            current_end = line_end
+        else:
+            if current_start is None:
+                current_start = position
+            current_end = line_end
+        position = line_end
+    if current_start is not None and current_end is not None:
+        spans.append((current_start, current_end))
+    return spans
+
+
+def _reviewed_passage_span(
+    note_text: str, *, heading: str, quote: str, path: str
+) -> tuple[int, int]:
+    expected_heading = _normalized_heading(heading)
+    sections = [
+        section for section in _heading_sections(note_text) if section[0] == expected_heading
+    ]
+    if not sections:
+        raise ContractError(f"{path}.heading must name an actual Markdown heading")
+    matches: list[tuple[int, int, int]] = []
+    for _, section_start, section_end in sections:
+        offset = note_text.find(quote, section_start, section_end)
+        while offset >= 0:
+            matches.append((offset, section_start, section_end))
+            offset = note_text.find(quote, offset + len(quote), section_end)
+    if len(matches) != 1:
+        raise ContractError(
+            f"{path}.quote must occur exactly once beneath its declared Markdown heading"
+        )
+    quote_start, section_start, section_end = matches[0]
+    quote_end = quote_start + len(quote)
+    for span_start, span_end in _paragraph_spans(
+        note_text,
+        start=section_start,
+        end=section_end,
+    ):
+        if span_start <= quote_start and quote_end <= span_end:
+            return span_start, span_end
+    raise ContractError(f"{path}.quote must belong to a readable note paragraph")
+
+
+def validate_second_review_artifact(
     artifact: dict[str, Any],
     *,
-    kind: str,
-    context: dict[str, Any] | None = None,
-    lint: dict[str, Any] | None = None,
+    context: dict[str, Any],
+    note_text: str,
 ) -> dict[str, Any]:
-    if kind not in {"quality", "readability"}:
-        raise ContractError(f"Unknown review kind: {kind}")
-    expected_type = f"{kind}_review"
-    require_v2_artifact(artifact, artifact_type=expected_type, allow_statuses={"pass"})
+    require_v2_artifact(artifact, artifact_type="second_review", allow_statuses={"pass"})
     review = artifact.get("review")
     if not isinstance(review, dict):
         raise ContractError("review object is required")
-    if context is None:
-        raise ContractError("A synthesis_bundle context is required to validate a review")
     require_v2_artifact(
         context,
         artifact_type="synthesis_bundle",
@@ -671,9 +736,7 @@ def validate_review_artifact(
     if not re.fullmatch(r"[0-9a-f]{64}", actual_synthesis_hash):
         raise ContractError("Review must contain a valid synthesis_bundle_sha256")
     if actual_synthesis_hash != expected_synthesis_hash:
-        raise ContractError(
-            "Review synthesis_bundle_sha256 does not match synthesis context"
-        )
+        raise ContractError("Review synthesis_bundle_sha256 does not match synthesis context")
 
     author = str(artifact.get("author", "")).strip()
     reviewer = str(artifact.get("reviewer", "")).strip()
@@ -686,8 +749,6 @@ def validate_review_artifact(
         raise ContractError(f"review_origin must be one of {sorted(REVIEW_ORIGINS)}")
     if author.casefold() == reviewer.casefold():
         raise ContractError("Review author and reviewer must be different")
-    if review.get("independent") is not True:
-        raise ContractError("Passing review must be explicitly independent")
     if str(review.get("author", "")).strip() != author:
         raise ContractError("review.author must match artifact author")
     if str(review.get("reviewer", "")).strip() != reviewer:
@@ -695,11 +756,10 @@ def validate_review_artifact(
     if str(review.get("review_origin", "")).strip() != origin:
         raise ContractError("review.review_origin must match artifact review_origin")
 
-    fields = QUALITY_SCORE_FIELDS if kind == "quality" else READABILITY_SCORE_FIELDS
     scores = review.get("scores")
     if not isinstance(scores, dict):
         raise ContractError("review.scores must be an object")
-    for field in fields:
+    for field in SECOND_REVIEW_SCORE_FIELDS:
         value = scores.get(field)
         if not isinstance(value, int) or not 1 <= value <= 5:
             raise ContractError(f"review score {field} must be an integer from 1 to 5")
@@ -711,40 +771,37 @@ def validate_review_artifact(
     note_sha = str(artifact.get("note_sha256", ""))
     if not re.fullmatch(r"[0-9a-f]{64}", note_sha):
         raise ContractError("Review must contain a valid note_sha256")
-    if kind == "readability":
-        if lint is None:
-            raise ContractError("A passing lint report is required to validate readability")
-        require_v2_artifact(lint, artifact_type="lint_report", allow_statuses={"pass"})
-        require_same_identity(artifact, lint)
-        lint_note_sha = str(lint.get("note_sha256", ""))
-        if not re.fullmatch(r"[0-9a-f]{64}", lint_note_sha):
-            raise ContractError("Lint report must contain a valid note_sha256")
-        if artifact.get("lint_note_sha256") != lint_note_sha or note_sha != lint_note_sha:
-            raise ContractError("Readability review does not match the passing lint report")
-    if kind == "quality":
-        checked = review.get("claims_checked")
-        if not isinstance(checked, list) or len(checked) < 3:
-            raise ContractError("Passing quality review must check at least three claims")
-        normalized_claims: list[str] = []
-        for index, claim in enumerate(checked):
-            path = f"review.claims_checked[{index}]"
-            if not isinstance(claim, dict):
-                raise ContractError(f"{path} must be an object")
-            if not str(claim.get("claim", "")).strip():
-                raise ContractError(f"{path}.claim must not be empty")
-            normalized_claims.append(" ".join(str(claim["claim"]).split()).casefold())
-            evidence_ids = _string_list(
-                claim.get("evidence_ids"),
-                path=f"{path}.evidence_ids",
-                allow_empty=False,
-            )
-            unknown = sorted(set(evidence_ids) - known_evidence_ids)
-            if unknown:
-                raise ContractError(
-                    f"{path} contains unknown evidence IDs: {', '.join(unknown)}"
-                )
-        if len(normalized_claims) != len(set(normalized_claims)):
-            raise ContractError("Passing quality review must check distinct claims")
+    if note_sha != sha256_text(note_text):
+        raise ContractError("Second review does not match the current note text")
+    checked = review.get("passages_checked")
+    if not isinstance(checked, list) or len(checked) < 3:
+        raise ContractError("Passing second review must check at least three note passages")
+    normalized_quotes: list[str] = []
+    passage_spans: list[tuple[int, int]] = []
+    for index, passage in enumerate(checked):
+        path = f"review.passages_checked[{index}]"
+        if not isinstance(passage, dict):
+            raise ContractError(f"{path} must be an object")
+        heading = str(passage.get("heading", "")).strip()
+        quote = str(passage.get("quote", "")).strip()
+        if not heading or not quote:
+            raise ContractError(f"{path} must contain heading and quote")
+        passage_spans.append(
+            _reviewed_passage_span(note_text, heading=heading, quote=quote, path=path)
+        )
+        normalized_quotes.append(" ".join(quote.split()).casefold())
+        evidence_ids = _string_list(
+            passage.get("evidence_ids"),
+            path=f"{path}.evidence_ids",
+            allow_empty=False,
+        )
+        unknown = sorted(set(evidence_ids) - known_evidence_ids)
+        if unknown:
+            raise ContractError(f"{path} contains unknown evidence IDs: {', '.join(unknown)}")
+    if len(normalized_quotes) != len(set(normalized_quotes)):
+        raise ContractError("Passing second review must check distinct note passages")
+    if len(passage_spans) != len(set(passage_spans)):
+        raise ContractError("Passing second review must check different note paragraphs")
     return artifact
 
 

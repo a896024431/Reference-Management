@@ -70,8 +70,7 @@ def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
     command.add_argument("--paper-record", required=True)
     command.add_argument("--evidence", required=True)
-    command.add_argument("--figures", default="")
-    command.add_argument("--assets", default="")
+    command.add_argument("--visual-pages", default="")
     command.add_argument("--output", default="")
     return command
 
@@ -98,25 +97,10 @@ def _by_type(units: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     return dict(grouped)
 
 
-def _figure_payload(wrapper: dict[str, Any]) -> dict[str, Any]:
-    if isinstance(wrapper.get("figure_decisions"), dict):
-        return wrapper["figure_decisions"]
-    if isinstance(wrapper.get("figure_plan"), dict):
-        return wrapper["figure_plan"]
-    return wrapper
-
-
-def _asset_payload(wrapper: dict[str, Any]) -> dict[str, Any]:
-    if isinstance(wrapper.get("figure_manifest"), dict):
-        return wrapper["figure_manifest"]
-    return wrapper
-
-
 def build_bundle(
     paper_record: dict[str, Any],
     evidence: dict[str, Any],
-    figures: dict[str, Any] | None = None,
-    assets: dict[str, Any] | None = None,
+    visual_pages: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_paper_record_artifact(paper_record)
     validate_evidence_pack_artifact(
@@ -124,10 +108,8 @@ def build_bundle(
         paper_record_artifact=paper_record,
     )
     paper_id, run_id = require_same_identity(paper_record, evidence)
-    figures = figures or {}
-    assets = assets or {}
-    _check_optional_identity(paper_record, figures)
-    _check_optional_identity(paper_record, assets)
+    visual_pages = visual_pages or {}
+    _check_optional_identity(paper_record, visual_pages)
 
     record = paper_record["paper_record"]
     metadata = record["metadata"]
@@ -164,8 +146,7 @@ def build_bundle(
             "equation_candidates": pack.get("equation_candidates", []),
             "figure_captions": pack.get("figure_captions", []),
             "table_captions": pack.get("table_captions", []),
-            "figure_decisions": _figure_payload(figures),
-            "pdf_assets": _asset_payload(assets),
+            "visual_pages": visual_pages,
             "summary": evidence.get("summary", {}),
             "note_plan_contract": {
                 "artifact_type": "note_plan",
@@ -178,7 +159,6 @@ def build_bundle(
                     "key_numbers",
                     "real_comparisons",
                     "section_plan",
-                    "figure_intents",
                 ],
                 "evidence_reference_rule": (
                     "关键结论必须引用 evidence_id，并保留主文或补充材料页码。"
@@ -231,8 +211,7 @@ def main() -> None:
     artifact = build_bundle(
         load_json_object(args.paper_record),
         load_json_object(args.evidence),
-        _optional_artifact(args.figures),
-        _optional_artifact(args.assets),
+        _optional_artifact(args.visual_pages),
     )
     emit_json(artifact, args.output or None)
     if artifact["status"] == "fail":

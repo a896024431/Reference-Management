@@ -25,8 +25,6 @@ properties:
     displayName: 证据等级
   note_status:
     displayName: 笔记状态
-  figure_status:
-    displayName: 插图状态
 views:
   - type: table
     name: 全部论文
@@ -37,18 +35,6 @@ views:
       - venue
       - topics
       - evidence_level
-      - note_status
-      - figure_status
-  - type: table
-    name: 待补图
-    filters:
-      or:
-        - figure_status == "partial"
-        - figure_status == "placeholder_only"
-    order:
-      - title_zh
-      - figure_status
-      - topics
       - note_status
   - type: table
     name: 按主题

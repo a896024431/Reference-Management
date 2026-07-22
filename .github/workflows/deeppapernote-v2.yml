@@ -20,44 +20,26 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Reject tracked local and private artifacts
+      - name: Reject tracked paths ignored by .gitignore
         shell: bash
         run: |
           set -euo pipefail
-          forbidden=()
+          ignored=()
           while IFS= read -r -d '' path; do
-            lower=${path,,}
-            case "$lower" in
-              *.pdf|*.epub|*.sqlite|*.sqlite-*|*.db|*.zotero-ft-cache|\
-              *.key|*.pem|*.pfx|*.crt|\
-              .env|.env.*|*/.env|*/.env.*|\
-              .local|.local/*|*/.local|*/.local/*|\
-              文献/zotero已删除|文献/zotero已删除/*|\
-              .obsidian|.obsidian/*|*/.obsidian|*/.obsidian/*|\
-              .trash|.trash/*|*/.trash|*/.trash/*|\
-              storage|storage/*|*/storage|*/storage/*|\
-              deeppapernote_output|deeppapernote_output/*|*/deeppapernote_output|*/deeppapernote_output/*|\
-              tmp|tmp/*|*/tmp|*/tmp/*|\
-              *.tmp|*.temp|*.bak|*.log|*.pyc|*.pyo|*.pyd|\
-              __pycache__|__pycache__/*|*/__pycache__|*/__pycache__/*|\
-              node_modules|node_modules/*|*/node_modules|*/node_modules/*|\
-              .pytest_cache|.pytest_cache/*|*/.pytest_cache|*/.pytest_cache/*|\
-              .mypy_cache|.mypy_cache/*|*/.mypy_cache|*/.mypy_cache/*|\
-              .ruff_cache|.ruff_cache/*|*/.ruff_cache|*/.ruff_cache/*|\
-              .coverage|*/.coverage|htmlcov|htmlcov/*|*/htmlcov|*/htmlcov/*|\
-              .venv|.venv/*|*/.venv|*/.venv/*|venv|venv/*|*/venv|*/venv/*|\
-              *.egg-info|*.egg-info/*|\
-              .agents/skills/*/.agent-work|.agents/skills/*/.agent-work/*|\
-              .agents/skills/*/dist|.agents/skills/*/dist/*|\
-              .agents/skills/*/build|.agents/skills/*/build/*)
-                forbidden+=("$path")
-                ;;
-            esac
+            if git check-ignore --no-index --quiet -- "$path"; then
+              ignored+=("$path")
+            else
+              status=$?
+              if (( status != 1 )); then
+                echo "Could not evaluate tracked path against .gitignore: $path" >&2
+                exit "$status"
+              fi
+            fi
           done < <(git ls-files -z)
 
-          if (( ${#forbidden[@]} )); then
-            echo "Tracked local, private, or generated artifacts are forbidden:"
-            printf ' - %s\n' "${forbidden[@]}"
+          if (( ${#ignored[@]} )); then
+            echo "Tracked paths ignored by .gitignore are forbidden:"
+            printf ' - %s\n' "${ignored[@]}"
             exit 1
           fi
 
@@ -210,7 +192,8 @@ jobs:
     needs: [policy, changes]
     if: >-
       ${{ needs.changes.outputs.vault_content == 'true' ||
-          needs.changes.outputs.deeppapernote_vault_contract == 'true' }}
+          needs.changes.outputs.deeppapernote_vault_contract == 'true' ||
+          needs.changes.outputs.ci == 'true' }}
     runs-on: ubuntu-latest
     env:
       PYTHONUTF8: "1"

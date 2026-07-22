@@ -82,8 +82,6 @@ views:
   - type: table
     name: 全部论文
   - type: table
-    name: 待补图
-  - type: table
     name: 按主题
 """
 
@@ -163,6 +161,7 @@ class FrontmatterTests(unittest.TestCase):
 
         self.assertIn("property_unknown", codes)
 
+
 class LinkResolutionTests(unittest.TestCase):
     def test_resolves_alias_and_doi(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -192,7 +191,7 @@ class LinkResolutionTests(unittest.TestCase):
 
 
 class BaseDefinitionTests(unittest.TestCase):
-    def test_parses_exact_filters_and_three_official_views(self) -> None:
+    def test_parses_exact_filters_and_two_official_views(self) -> None:
         definition = parse_base_definition(base_text())
         self.assertEqual(
             definition.global_filters,
@@ -206,7 +205,6 @@ class BaseDefinitionTests(unittest.TestCase):
             definition.views,
             (
                 "\u5168\u90e8\u8bba\u6587",
-                "\u5f85\u8865\u56fe",
                 "\u6309\u4e3b\u9898",
             ),
         )
@@ -224,7 +222,6 @@ views:
   - type: table
     name: \u5176\u5b83
 # name: \u5168\u90e8\u8bba\u6587
-# name: \u5f85\u8865\u56fe
 # name: \u6309\u4e3b\u9898
 """
             (root / BASE_PATH).write_text(fake_base, encoding="utf-8")
@@ -451,23 +448,6 @@ class VaultLintTests(unittest.TestCase):
             self.assertIn("paper_directory_extra_entry", codes)
             self.assertIn("image_extension_unsupported", codes)
             self.assertIn("images_extra_entry", codes)
-
-    def test_reader_visible_figure_workflow_metadata_fails_vault_lint(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            note_path = build_vault(root)
-            note_path.write_text(
-                note_path.read_text(encoding="utf-8")
-                + "\n> [!figure] Fig. 2\n> 当前状态：候选裁剪已通过 QA。\n"
-                + "doc:main|fig-2\n",
-                encoding="utf-8",
-            )
-
-            codes = {issue["code"] for issue in lint_vault(root)["issues"]}
-
-            self.assertIn("figure_placeholder_callout_present", codes)
-            self.assertIn("figure_planning_label_present", codes)
-            self.assertIn("source_figure_target_id_present", codes)
 
     def test_remote_and_html_images_fail_vault_lint(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

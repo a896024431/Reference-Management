@@ -769,3 +769,90 @@ def test_local_api_403_is_actionable_and_does_not_write(monkeypatch: pytest.Monk
         sync_module._json_request("http://localhost:23119/api", "users/0/collections")
     with pytest.raises(sync_module.SyncError, match="允许本机应用访问"):
         sync_module._text_request("http://localhost:23119/api", "users/0/items/ATTACH001/file/view/url")
+
+
+def test_main_uses_the_fixed_local_api_and_root_collection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    collected: dict[str, object] = {}
+    synced: dict[str, object] = {}
+
+    def fake_collect(
+        api_base: str, root_collection: str, collection: str, item_key: str
+    ) -> list[dict[str, object]]:
+        collected.update(
+            api_base=api_base,
+            root_collection=root_collection,
+            collection=collection,
+            item_key=item_key,
+        )
+        return []
+
+    def fake_sync(
+        vault: Path,
+        papers_to_sync: list[dict[str, object]],
+        api_base: str,
+        root_collection: str,
+        dry_run: bool,
+        *,
+        complete: bool = False,
+    ) -> dict[str, str]:
+        synced.update(
+            vault=vault,
+            papers=papers_to_sync,
+            api_base=api_base,
+            root_collection=root_collection,
+            dry_run=dry_run,
+            complete=complete,
+        )
+        return {"status": "pass"}
+
+    monkeypatch.setattr(sync_module, "_collect_papers", fake_collect)
+    monkeypatch.setattr(sync_module, "sync", fake_sync)
+    monkeypatch.setattr(
+        sync_module.sys,
+        "argv",
+        [str(SCRIPT), "--vault-root", str(tmp_path), "--collection", "QPC", "--dry-run"],
+    )
+
+    sync_module.main()
+
+    assert collected == {
+        "api_base": sync_module.API_BASE,
+        "root_collection": sync_module.ROOT_COLLECTION,
+        "collection": "QPC",
+        "item_key": "",
+    }
+    assert synced == {
+        "vault": tmp_path,
+        "papers": [],
+        "api_base": sync_module.API_BASE,
+        "root_collection": sync_module.ROOT_COLLECTION,
+        "dry_run": True,
+        "complete": False,
+    }
+    assert json.loads(capsys.readouterr().out) == {"status": "pass"}
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("--root-collection", "Other/Scope"), ("--api-base", "http://example.invalid/api")],
+)
+def test_main_rejects_scope_and_api_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    option: str,
+    value: str,
+) -> None:
+    monkeypatch.setattr(
+        sync_module.sys,
+        "argv",
+        [str(SCRIPT), "--vault-root", str(tmp_path), option, value],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        sync_module.main()
+
+    assert error.value.code == 2
+    assert option in capsys.readouterr().err

@@ -1,7 +1,7 @@
 interface:
   display_name: "DeepPaperNote"
-  short_description: "从本地镜像 PDF 生成证据优先的论文深读笔记"
-  default_prompt: "Use $deeppapernote to turn one local PDF under 文献 into a verified Chinese deep-reading note beside that paper."
+  short_description: "从本地镜像 PDF 生成证据优先的纯文字深读笔记"
+  default_prompt: "Use $deeppapernote to turn one local PDF under 文献 into an evidence-traceable Chinese text-only deep-reading note."
 
 policy:
   allow_implicit_invocation: true

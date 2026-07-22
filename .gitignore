@@ -1,6 +1,6 @@
 # Keep this repository as a portable Codex + Obsidian research vault.
 # Default deny: explicitly allow only guidance, the repo-local
-# DeepPaperNote skill, Markdown notes, and paper-note image assets.
+# DeepPaperNote skill, Markdown notes, and legacy paper-note image assets.
 *
 !*/
 
@@ -27,7 +27,7 @@
 .agents/skills/**/build/
 *.egg-info/
 
-# Obsidian outputs mirror the Zotero collection hierarchy under 文献/.
+# Obsidian outputs mirror the Zotero collection hierarchy under 文献/; images are legacy reader assets.
 !文献/
 !文献/论文导航.md
 !文献/论文库.base

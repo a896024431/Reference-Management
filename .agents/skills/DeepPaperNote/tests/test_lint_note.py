@@ -16,12 +16,6 @@ def test_mixed_language_detector_flags_prose_line() -> None:
     assert len(issues) == 1
 
 
-def test_mixed_language_detector_exempts_figure_status_lines() -> None:
-    note = "> 当前状态：保留占位；当前提取结果只拿到 partial crop，无法稳定恢复。"
-    issues = mixed_language_issues(note)
-    assert issues == []
-
-
 def test_mixed_language_detector_exempts_core_info_section() -> None:
     note = """## 核心信息
 

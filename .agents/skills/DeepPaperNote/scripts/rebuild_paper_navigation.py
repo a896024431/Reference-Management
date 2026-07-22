@@ -40,18 +40,17 @@ def parser() -> argparse.ArgumentParser:
 
 
 def render_navigation(vault_root: Path) -> str:
-    records = discover_notes(vault_root)
-    invalid: list[str] = []
-    for record in records:
-        if record.parse_errors or validate_frontmatter_properties(record.properties):
-            invalid.append(record.relative_path)
-    if invalid:
-        joined = "\n- ".join(invalid)
-        raise ValueError(
-            f"Cannot regenerate navigation until every note has valid v2 properties:\n- {joined}"
-        )
-
-    records = sorted(records, key=_navigation_sort_key)
+    # A single publication already validates its own staged note.  Historical
+    # notes elsewhere in the Vault must not turn navigation refresh into a
+    # whole-Vault release gate, so omit malformed records rather than failing.
+    records = sorted(
+        (
+            record
+            for record in discover_notes(vault_root)
+            if not record.parse_errors and not validate_frontmatter_properties(record.properties)
+        ),
+        key=_navigation_sort_key,
+    )
 
     lines = [
         "---",
@@ -65,7 +64,7 @@ def render_navigation(vault_root: Path) -> str:
         "# 论文导航",
         "",
         (
-            "这里是当前 Vault 的论文入口。属性、主题和待补图状态可在核心 Base 中筛选；"
+            "这里是当前 Vault 的论文入口。属性和主题可在核心 Base 中筛选；"
             "下方为每篇论文保留一个直接链接。"
         ),
         "",
@@ -88,7 +87,7 @@ def render_navigation(vault_root: Path) -> str:
             "",
             "- 想按属性筛选时，打开或展开 `论文库.base`。",
             "- 想浏览研究脉络时，从论文列表进入，并结合每篇笔记的“相关论文”继续跳转。",
-            "- `note_status`、`evidence_level` 和 `figure_status` 是完成度判断依据。",
+            "- `note_status` 与 `evidence_level` 是完成度判断依据。",
             "",
         ]
     )

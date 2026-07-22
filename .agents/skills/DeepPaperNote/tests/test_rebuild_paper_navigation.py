@@ -72,14 +72,26 @@ class NavigationGenerationTests(unittest.TestCase):
             self.assertEqual(generated.count(paper_b_link), 1)
             self.assertEqual(generated.count(f"/{NOTE_FILENAME[:-3]}|"), 2)
 
-    def test_refuses_legacy_note_without_v2_properties(self) -> None:
+    def test_skips_legacy_note_without_blocking_valid_navigation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             vault = Path(temp)
-            paper_dir = vault / "文献" / "制备工艺" / "EFLAO" / "Legacy"
-            paper_dir.mkdir(parents=True)
-            (paper_dir / NOTE_FILENAME).write_text("# Legacy\n", encoding="utf-8")
-            with self.assertRaises(ValueError):
-                render_navigation(vault)
+            legacy_dir = vault / "文献" / "制备工艺" / "EFLAO" / "Legacy"
+            legacy_dir.mkdir(parents=True)
+            (legacy_dir / NOTE_FILENAME).write_text("# Legacy\n", encoding="utf-8")
+            valid_dir = vault / "文献" / "QPC" / "Current"
+            valid_dir.mkdir(parents=True)
+            (valid_dir / NOTE_FILENAME).write_text(
+                render_frontmatter(
+                    properties("Current", "当前论文", "量子输运", ["transport", "navigation"])
+                )
+                + "\n# 当前论文\n",
+                encoding="utf-8",
+            )
+
+            generated = render_navigation(vault)
+
+            self.assertIn("[[文献/QPC/Current/笔记|当前论文]]", generated)
+            self.assertNotIn("Legacy", generated)
 
     def test_atomic_write_preserves_previous_file_when_replace_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -64,56 +64,6 @@ AI_LEAKAGE = (
     "操作是",
     "输出是",
 )
-# Figure extraction, ranking, and visual QA are run artifacts. They explain why
-# the pipeline made a decision, but they are not part of a reader-facing note.
-# Keep these patterns deliberately narrow: an ordinary discussion of a hash
-# function, for example, is not a failure unless it is clearly figure QA text.
-READER_VISIBLE_FIGURE_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "figure_placeholder_callout_present",
-        re.compile(r"(?im)^\s*>\s*\[!figure(?:[^\]]*)\]"),
-    ),
-    (
-        "figure_planning_label_present",
-        re.compile(
-            r"(?im)^\s*(?:>\s*)?(?:"
-            r"建议位置|放置原因|当前状态|"
-            r"suggested(?:\s+figure)?\s+location|placement\s+reason|"
-            r"why\s+here|current\s+status"
-            r")\s*[:：]"
-        ),
-    ),
-    (
-        "source_figure_target_id_present",
-        re.compile(r"(?i)\bdoc:[A-Za-z0-9._-]+\|(?:fig(?:ure)?|table)\b"),
-    ),
-    (
-        "figure_qa_metadata_present",
-        re.compile(
-            r"(?i)(?:"
-            r"图号(?:身份|匹配|识别)|面板完整性|裁剪完整度|"
-            r"(?:图像|图片|插图|图表|裁剪|资源).{0,18}"
-            r"(?:哈希|sha-?256|asset[_ -]?id|bbox[_ -]?hash)|"
-            r"(?:哈希|sha-?256|asset[_ -]?id|bbox[_ -]?hash).{0,18}"
-            r"(?:图像|图片|插图|图表|裁剪|资源|一致性|校验|核验|匹配)|"
-            r"(?:候选|裁剪|资源).{0,18}(?:身份|完整性|可读性|复核|核验|校验)|"
-            r"(?:图例|坐标).{0,18}(?:可读性)?(?:复核|核验|校验)|"
-            r"\b(?:selected_asset_id|candidate_asset_ids|rejected_asset_ids|asset_id|bbox_hash|file_sha256|decision_reason|target_section)\b|"
-            r"\b(?:reject(?:_visual_quality)?|visual[_ -]?quality(?:_status)?)\b"
-            r")"
-        ),
-    ),
-    (
-        "figure_process_metadata_present",
-        re.compile(
-            r"(?i)(?:"
-            r"\b(?:candidate(?:\s+(?:image|asset|crop))?|crop(?:ped)?|contact\s+sheet|qa|materialize(?:d|ation)?|quality\s+gate|publication\s+gate)\b|"
-            r"候选(?:图|图片|资源)|(?:图像|图片|插图|图表).{0,16}(?:裁剪|候选|物化|复核|质检|门禁)|"
-            r"(?:已|已经|尚未|未).{0,12}(?:插入|提取|裁剪|物化)"
-            r")"
-        ),
-    ),
-)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -184,40 +134,6 @@ def _claim_items(section: str) -> list[str]:
             section,
         )
     ]
-
-
-def _reader_visible_body(text: str) -> str:
-    """Remove machine-only markup before checking reader-visible figure prose."""
-    body = parse_frontmatter(text).body
-    # Asset filenames contain identifiers and hashes by design; an image embed is
-    # not reader-visible QA prose, so do not let it trigger the metadata gate.
-    body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
-    body = re.sub(r"!\[\[[^\]]+\]\]", "", body)
-    body = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", body)
-    body = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", body)
-    return body
-
-
-def reader_visible_figure_metadata_issues(text: str) -> list[dict[str, object]]:
-    """Find planning/QA metadata that must never appear in a published note."""
-    source_body = parse_frontmatter(text).body
-    issues: list[dict[str, object]] = []
-    for match in re.finditer(r"<!--.*?-->", source_body, flags=re.DOTALL):
-        line = source_body.count("\n", 0, match.start()) + 1
-        issues.append(
-            {
-                "code": "published_html_comment_present",
-                "line": line,
-                "excerpt": match.group(0).strip().replace("\n", " ")[:160],
-            }
-        )
-    body = _reader_visible_body(text)
-    for code, pattern in READER_VISIBLE_FIGURE_METADATA_PATTERNS:
-        for match in pattern.finditer(body):
-            line = body.count("\n", 0, match.start()) + 1
-            excerpt = match.group(0).strip().replace("\n", " ")
-            issues.append({"code": code, "line": line, "excerpt": excerpt[:160]})
-    return issues
 
 
 def build_release_lint(
@@ -301,8 +217,6 @@ def build_release_lint(
         failures.append("temporary_path_present")
 
     mixed = mixed_language_issues(text)
-    figure_metadata_issues = reader_visible_figure_metadata_issues(text)
-    failures.extend(item["code"] for item in figure_metadata_issues)
     linebreaks = suspicious_mid_sentence_linebreaks(body)
     code_math = suspicious_code_formatted_math(text)
     math_issues = math_render_issues(text)
@@ -343,7 +257,6 @@ def build_release_lint(
             "math_render_issues": math_issues,
             "latex_commands_outside_math": raw_latex_issues,
             "unanchored_key_claims": unanchored_claims,
-            "reader_visible_figure_metadata_issues": figure_metadata_issues,
             "passes_basic_structure": not any(
                 item.startswith(
                     (
@@ -382,12 +295,6 @@ def build_release_lint(
                     "runtime_status_persisted",
                     "temporary_path_present",
                     "duplicate_english_title",
-                    "published_html_comment_present",
-                    "figure_placeholder_callout_present",
-                    "figure_planning_label_present",
-                    "source_figure_target_id_present",
-                    "figure_qa_metadata_present",
-                    "figure_process_metadata_present",
                 )
             ),
         }

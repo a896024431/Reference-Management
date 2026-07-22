@@ -40,7 +40,6 @@ REQUIRED_PROPERTIES = (
     "paper_type",
     "evidence_level",
     "note_status",
-    "figure_status",
     "aliases",
     "tags",
 )
@@ -57,6 +56,10 @@ OPTIONAL_PROPERTIES = (
     "code_url",
     "project_url",
 )
+
+# Existing reader notes may retain this former output property. New notes do not
+# write it, but legacy notes must not block navigation or Vault maintenance.
+LEGACY_PROPERTIES = ("figure_status",)
 
 LIST_PROPERTIES = {
     "authors",
@@ -104,7 +107,6 @@ TAG_RE = re.compile(r"^papers(?:/[a-z0-9][a-z0-9-]*)+$")
 YEAR_RE = re.compile(r"^(?:18|19|20|21)\d{2}$")
 BASE_REQUIRED_VIEWS = (
     "\u5168\u90e8\u8bba\u6587",
-    "\u5f85\u8865\u56fe",
     "\u6309\u4e3b\u9898",
 )
 BASE_REQUIRED_FILTERS = (
@@ -569,7 +571,7 @@ def validate_frontmatter_properties(properties: Mapping[str, Any]) -> list[dict[
                     )
                 )
 
-    allowed_keys = set(REQUIRED_PROPERTIES) | set(OPTIONAL_PROPERTIES)
+    allowed_keys = set(REQUIRED_PROPERTIES) | set(OPTIONAL_PROPERTIES) | set(LEGACY_PROPERTIES)
     for key, value in properties.items():
         if key in OPTIONAL_PROPERTIES and is_empty_value(value):
             issues.append(
@@ -692,8 +694,7 @@ def _markdown_image_target(raw: str) -> str:
 def paper_local_image_names(note_text: str) -> tuple[set[str], list[str]]:
     """Return strict ``images/<basename>`` embeds and reader-image violations."""
     raw_targets = [
-        target.split("|", 1)[0].strip()
-        for target in re.findall(r"!\[\[([^\]]+)\]\]", note_text)
+        target.split("|", 1)[0].strip() for target in re.findall(r"!\[\[([^\]]+)\]\]", note_text)
     ]
     raw_targets.extend(
         _markdown_image_target(target) for target in MARKDOWN_IMAGE_RE.findall(note_text)
@@ -960,9 +961,7 @@ def _collect_document_links(
 def _validate_base_file(path: Path, vault_root: Path, issues: list[VaultIssue]) -> None:
     relative = path.relative_to(vault_root).as_posix()
     if not path.exists():
-        _issue(
-            issues, "paper_base_missing", relative, f"{BASE_PATH.as_posix()} is required"
-        )
+        _issue(issues, "paper_base_missing", relative, f"{BASE_PATH.as_posix()} is required")
         return
     text = path.read_text(encoding="utf-8-sig")
     try:
@@ -1205,13 +1204,6 @@ def _validate_library_structure(
     return image_files
 
 
-def _reader_visible_figure_issues(text: str) -> list[dict[str, object]]:
-    """Reuse the note publication-hygiene gate without creating an import cycle."""
-    from lint_note_v2 import reader_visible_figure_metadata_issues
-
-    return reader_visible_figure_metadata_issues(text)
-
-
 def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> dict[str, Any]:
     vault_root = vault_root.expanduser().resolve()
     records = discover_notes(vault_root)
@@ -1283,18 +1275,6 @@ def lint_vault(vault_root: Path, *, allow_missing_local_pdfs: bool = False) -> d
                     f"Permanent note references temporary output: {path_part}",
                     match=path_part,
                 )
-
-        for metadata_issue in _reader_visible_figure_issues(
-            record.path.read_text(encoding="utf-8-sig")
-        ):
-            _issue(
-                issues,
-                str(metadata_issue["code"]),
-                record.relative_path,
-                "Reader-visible figure workflow metadata must stay in local run artifacts",
-                line=metadata_issue.get("line"),
-                excerpt=metadata_issue.get("excerpt", ""),
-            )
 
         _, image_reference_failures = paper_local_image_names(record.body)
         for failure in image_reference_failures:
