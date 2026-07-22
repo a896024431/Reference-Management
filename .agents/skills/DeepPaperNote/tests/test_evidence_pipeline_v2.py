@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -170,6 +171,10 @@ def test_full_page_evidence_has_real_page_anchors_and_profile_coverage(tmp_path:
             "ablation_evidence",
             "limitations_evidence",
             "quotes",
+            "sections",
+            "section_texts",
+            "candidate_chunks",
+            "equation_candidates",
         )
     )
     validate_evidence_pack_artifact(
@@ -228,7 +233,7 @@ def test_evidence_extraction_rejects_a_file_changed_during_read(tmp_path: Path) 
     )
 
 
-def test_bundle_does_not_truncate_evidence_or_long_sections() -> None:
+def test_bundle_keeps_complete_evidence_once_without_duplicate_views() -> None:
     record = make_record()
     source_document = {
         "document_id": "doc:main",
@@ -241,6 +246,7 @@ def test_bundle_does_not_truncate_evidence_or_long_sections() -> None:
     evidence = artifact_header(
         "evidence_pack", paper_id=record["paper_id"], run_id=record["run_id"]
     )
+    long_text = "unique-long-evidence-" + "x" * 6000
     evidence["evidence_pack"] = {
         "paper_id": record["paper_id"],
         "paper_type": "experimental_physics",
@@ -274,12 +280,23 @@ def test_bundle_does_not_truncate_evidence_or_long_sections() -> None:
                 "types": [
                     "problem" if index == 0 else "protocol" if index == 1 else "results"
                 ],
-                "text": f"result {index}",
+                "text": long_text if index == 0 else f"result {index}",
             }
             for index in range(25)
         ],
-        "section_texts": {"doc:main:results": "x" * 6000},
     }
     bundle = build_bundle(record, evidence)
     assert len(bundle["evidence_units"]) == 25
-    assert len(bundle["section_texts"]["doc:main:results"]) == 6000
+    assert json.dumps(bundle).count(long_text) == 1
+    assert all(
+        field not in bundle
+        for field in (
+            "evidence_by_type",
+            "section_texts",
+            "sections",
+            "candidate_chunks",
+            "equation_candidates",
+            "note_plan_contract",
+            "writing_contract",
+        )
+    )

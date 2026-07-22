@@ -22,7 +22,7 @@ description: Generate or explicitly revise an evidence-first Chinese deep-readin
 使用 Miniconda `deeppapernote` 环境，并顺序运行命令。
 
 1. 运行 `scripts/run_pipeline_v2.py --input ... --vault-root ...`。它提取全文证据，并在当前 `.local/deeppapernote/runs/<run_id>/visual-pages/` 临时渲染少量含图页，供代理理解图形信息。
-2. 代理读取 `synthesis_bundle.json`，必要时查看 `visual_pages.json` 中列出的本地页面图片；写 `note_plan.json` 并用 `validate_note_plan_v2.py` 验证。
+2. 代理读取紧凑的 `synthesis_bundle.json`（每段 evidence 正文只保留一份），必要时查看 `visual_pages.json` 中列出的本地页面图片；写 `note_plan.json` 并用 `validate_note_plan_v2.py` 验证。
 3. 代理只在当前 run 的 `staging/笔记.md` 写纯文字 Markdown。不得嵌入、复制或发布任何图片。
 4. 由不同于作者的另一代理或人工完成一次第二读校对：至少引用各自 Markdown 标题下的三处不同正文段落，并核对对应 evidence ID。校对结果先写为 `second_review.input.json`。
 5. 运行 `publish_note_v2.py --vault <Vault> --run-id <run_id> --author <作者>`。它用固定 run 路径执行 lint、绑定第二读、原子替换笔记并重建论文导航。

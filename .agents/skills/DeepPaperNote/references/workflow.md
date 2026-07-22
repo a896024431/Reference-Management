@@ -4,7 +4,7 @@
 
 一次运行对应一篇论文，可含一份主文与多份 SI。正式输入只来自 `文献/` 的本地 PDF；不得联网补全或查询 Zotero。所有中间结果写入 `.local/deeppapernote/runs/<run_id>/`。
 
-`run_pipeline_v2.py` 依次建立 paper record、全文 evidence pack、少量视觉页和 synthesis bundle。任一 PDF 解析失败、全文截断、OCR 文字覆盖低于 60% 或论文类型所需证据缺失时停止。
+`run_pipeline_v2.py` 依次建立 paper record、全文 evidence pack、少量视觉页和紧凑的 synthesis bundle。交给代理的 bundle 只保留一份带 evidence ID 的正文，不再按类型、章节或候选清单重复复制全文。任一 PDF 解析失败、全文截断、OCR 文字覆盖低于 60% 或论文类型所需证据缺失时停止。
 
 视觉页来自含图注或图号引用的 PDF 页面，保留在 run 的 `visual-pages/`。它们只供代理阅读曲线、示意图或显微图，既不裁切成图片资产，也不进入笔记、发布目录或 Git。
 

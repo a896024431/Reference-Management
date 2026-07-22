@@ -9,6 +9,7 @@ from pathlib import Path
 import fitz
 import publish_note_v2
 import pytest
+import render_visual_pages_v2
 from contracts_v2 import ContractError, artifact_header, emit_json, load_json_object, sha256_text
 from render_visual_pages_v2 import render_visual_pages
 from validate_note_plan_v2 import build_note_plan_artifact
@@ -26,7 +27,8 @@ def _make_pdf(path: Path) -> Path:
         ),
         (
             "III. RESULTS AND DISCUSSION\nConductance increases by 10 percent. The result has "
-            "an alternative explanation from device inhomogeneity."
+            "an alternative explanation from device inhomogeneity.\n"
+            "Figure 2: Conductance response."
         ),
     ]
     document = fitz.open()
@@ -221,12 +223,47 @@ def test_pipeline_renders_visual_pages_without_creating_note_images(tmp_path: Pa
     assert not (run_dir / "staging" / "images").exists()
     visual_pages = load_json_object(run_dir / "visual_pages.json")
     assert visual_pages["status"] == "pass"
-    assert visual_pages["pages"]
+    assert len(visual_pages["pages"]) == 2
     for page in visual_pages["pages"]:
         assert (run_dir / page["path"]).is_file()
     bundle = load_json_object(run_dir / "synthesis_bundle.json")
     assert bundle["visual_pages"]["artifact_type"] == "visual_pages"
-    assert "figure_intents" not in bundle["note_plan_contract"]["required_fields"]
+    assert all(
+        field not in bundle
+        for field in (
+            "evidence_by_type",
+            "section_texts",
+            "candidate_chunks",
+            "note_plan_contract",
+            "writing_contract",
+        )
+    )
+
+
+def test_visual_reader_hashes_each_source_pdf_once_before_and_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "vault"
+    paper_dir = vault / "文献" / "QPC" / "Graphene quantum Hall transport experiment"
+    paper_dir.mkdir(parents=True)
+    pdf = _make_pdf(paper_dir / "paper.pdf")
+    assert _run_pipeline(pdf, vault, "batched-visual-hash").returncode == 0
+    run_dir = vault / ".local" / "deeppapernote" / "runs" / "batched-visual-hash"
+    paper_record = load_json_object(run_dir / "paper_record.json")
+    evidence = load_json_object(run_dir / "evidence_pack.json")
+    shutil.rmtree(run_dir / "visual-pages")
+    original_sha256_file = render_visual_pages_v2.sha256_file
+    hash_calls: list[Path] = []
+
+    def count_hashes(path: str | Path) -> str:
+        hash_calls.append(Path(path).resolve())
+        return original_sha256_file(path)
+
+    monkeypatch.setattr(render_visual_pages_v2, "sha256_file", count_hashes)
+    artifact = render_visual_pages(paper_record, evidence, run_dir=run_dir)
+
+    assert len(artifact["pages"]) == 2
+    assert hash_calls == [pdf.resolve(), pdf.resolve()]
 
 
 def test_visual_reader_rejects_a_pdf_changed_after_evidence_extraction(tmp_path: Path) -> None:

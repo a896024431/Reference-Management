@@ -104,10 +104,13 @@ def render_visual_pages(
     selected = _caption_pages(pack) or _referenced_pages(pack)
     if max_pages:
         selected = selected[:max_pages]
+    selected_by_document: dict[str, list[tuple[int, int, list[str]]]] = {}
+    for index, (document_id, page_number, labels) in enumerate(selected, start=1):
+        selected_by_document.setdefault(document_id, []).append((index, page_number, labels))
     output_dir.mkdir(parents=True, exist_ok=False)
     pages: list[dict[str, Any]] = []
     try:
-        for index, (document_id, page_number, labels) in enumerate(selected, start=1):
+        for document_id, render_items in selected_by_document.items():
             document = documents.get(document_id)
             if document is None:
                 raise ContractError(f"visual page refers to unknown document: {document_id}")
@@ -123,31 +126,33 @@ def render_visual_pages(
                 pdf = fitz.open(source)
                 if len(pdf) != document["pages"]:
                     raise ContractError(f"visual page source page count changed: {document_id}")
-                if page_number > len(pdf):
-                    raise ContractError(
-                        f"visual page is outside source document: {document_id} p. {page_number}"
+                for index, page_number, labels in render_items:
+                    if page_number > len(pdf):
+                        location = f"{document_id} p. {page_number}"
+                        raise ContractError(
+                            f"visual page is outside source document: {location}"
+                        )
+                    page = pdf[page_number - 1]
+                    output = output_dir / (
+                        f"visual-{index:02d}-{document_id.replace(':', '-')}-p{page_number:04d}.png"
                     )
-                page = pdf[page_number - 1]
-                output = output_dir / (
-                    f"visual-{index:02d}-{document_id.replace(':', '-')}-p{page_number:04d}.png"
-                )
-                pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
-                pixmap.save(output)
+                    pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                    pixmap.save(output)
+                    pages.append(
+                        {
+                            "document_id": document_id,
+                            "document_role": str(document.get("role", "")),
+                            "page": page_number,
+                            "labels": labels,
+                            "path": output.relative_to(resolved_run_dir).as_posix(),
+                        }
+                    )
             finally:
                 if pdf is not None:
                     pdf.close()
                 after_sha = sha256_file(source)
                 if after_sha != before_sha or after_sha != expected_sha:
                     raise ContractError(f"visual page source changed while reading: {document_id}")
-            pages.append(
-                {
-                    "document_id": document_id,
-                    "document_role": str(document.get("role", "")),
-                    "page": page_number,
-                    "labels": labels,
-                    "path": output.relative_to(resolved_run_dir).as_posix(),
-                }
-            )
     except Exception:
         for path in output_dir.glob("*"):
             path.unlink(missing_ok=True)

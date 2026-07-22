@@ -474,12 +474,6 @@ def page_captions(page_text: str, *, page: int, document: dict[str, Any]) -> lis
     return captions
 
 
-def _anchor(unit: dict[str, Any]) -> str:
-    label = "主文" if unit["document_role"] == "main" else "补充材料"
-    suffix = [*unit["figure_refs"], *unit["table_refs"], *unit["equation_refs"]]
-    return f"{label} p. {unit['page']}" + (f", {', '.join(suffix)}" if suffix else "")
-
-
 def build_evidence_artifact(
     paper_record_artifact: dict[str, Any],
     *,
@@ -502,11 +496,8 @@ def build_evidence_artifact(
 
     failures: list[str] = []
     page_records: list[dict[str, Any]] = []
-    section_records: list[dict[str, Any]] = []
     units: list[dict[str, Any]] = []
     captions: list[dict[str, Any]] = []
-    section_texts: dict[str, str] = {}
-    candidate_chunks: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     documents = record.get("documents", [])
     if not any(document.get("role") == "main" for document in documents):
@@ -570,19 +561,7 @@ def build_evidence_artifact(
             )
             captions.extend(page_captions(page["text"], page=page["page"], document=document))
         fragments = segment_pages(pages)
-        per_section: dict[str, list[str]] = defaultdict(list)
         for fragment in fragments:
-            per_section[fragment["section"]].append(fragment["text"])
-            section_records.append(
-                {
-                    "document_id": document["document_id"],
-                    "document_role": document["role"],
-                    "page": fragment["page"],
-                    "name": fragment["section"],
-                    "length": len(fragment["text"]),
-                    "preview": fragment["text"][:280],
-                }
-            )
             for chunk in chunk_fragment(fragment, max_chars=max_chars_per_chunk):
                 refs = extract_references(chunk["text"])
                 kinds = evidence_types(chunk["text"], chunk["section"])
@@ -604,21 +583,6 @@ def build_evidence_artifact(
                     **refs,
                 }
                 units.append(unit)
-                candidate_chunks[chunk["section"]].append(
-                    {
-                        "evidence_id": evidence_id,
-                        "text": chunk["text"],
-                        "source_section": chunk["section"],
-                        "page_hint": _anchor(unit),
-                        "kind_hint": ",".join(kinds),
-                        "document_id": document["document_id"],
-                        "document_role": document["role"],
-                        "page": chunk["page"],
-                    }
-                )
-        for section, texts in per_section.items():
-            key = f"{document['document_id']}:{section}"
-            section_texts[key] = normalize_whitespace(" ".join(texts))
 
     available_types = {kind for unit in units for kind in unit["types"]}
     required_types = PROFILE_REQUIREMENTS[paper_type]
@@ -643,20 +607,6 @@ def build_evidence_artifact(
 
     figures = [item for item in captions if str(item["id"]).lower().startswith(("fig", "extended"))]
     tables = [item for item in captions if str(item["id"]).lower().startswith("table")]
-    equation_candidates: list[dict[str, Any]] = []
-    for unit in units:
-        if unit["equation_refs"] or re.search(
-            r"\b(?:hamiltonian|equation|scaling|exponent)\b", unit["text"], re.I
-        ):
-            equation_candidates.append(
-                {
-                    "evidence_id": unit["evidence_id"],
-                    "equation": unit["text"],
-                    "source_section": unit["section"],
-                    "page_hint": _anchor(unit),
-                }
-            )
-
     pack = {
         "paper_id": paper_id,
         "paper_type": paper_type,
@@ -665,10 +615,6 @@ def build_evidence_artifact(
         "coverage": coverage,
         "evidence_units": units,
         "page_records": page_records,
-        "sections": section_records,
-        "section_texts": section_texts,
-        "candidate_chunks": dict(candidate_chunks),
-        "equation_candidates": equation_candidates[:16],
         "figure_captions": figures,
         "table_captions": tables,
         "evidence_quality": {"pass": "high", "fail": "low"}[status],
