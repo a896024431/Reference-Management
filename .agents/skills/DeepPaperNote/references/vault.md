@@ -10,7 +10,9 @@ Zotero PDF 先由 `$zotero-pdf-sync` 镜像到 Vault。`我的文库 / ZJU / 课
       笔记.md                  # 仅已完成精读时存在
       images/                  # 仅在有可靠图片时存在
 
-分类目录和只含 PDF 的论文目录都是合法的，不生成空笔记目录。题名只移除文件系统不允许的字符；同分类出现相同题名时同步器会使用稳定 Zotero key 区分目录。正式笔记目录只允许 PDF、`笔记.md` 与可选 `images/`；不得包含 manifest、候选图、运行时 JSON、其他文档或临时文件。
+分类目录和只含 PDF 的论文目录都是合法的，不生成空笔记目录。题名只移除文件系统不允许的字符；同分类出现相同题名时同步器跳过冲突项并在摘要报告，不合并或自动加后缀。父条目与附件 key 只保存在 `.local` 同步索引中。正式笔记目录只允许 PDF、`笔记.md` 与可选 `images/`；不得包含 manifest、候选图、运行时 JSON、其他文档或临时文件。
+
+`文献/Zotero已删除/` 是整库同步产生的本地归档，不是可发布论文树；DeepPaperNote、导航、Base 和 Git 都忽略它。
 
 `Research/` 是迁移前的旧布局；正式 Vault 中不得残留它。
 
@@ -48,6 +50,6 @@ Zotero PDF 先由 `$zotero-pdf-sync` 镜像到 Vault。`我的文库 / ZJU / 课
 
 ## 本地与 Git 边界
 
-`.local/`、`.obsidian/`、PDF、Zotero 数据库、密钥、缓存与临时文件不进入 Git。Git 只同步根说明、两个 repo-local skill、正式 workflow、论文导航、论文笔记、Base 和笔记使用的常见图片。
+`.local/`、`.obsidian/`、PDF、`文献/Zotero已删除/`、Zotero 数据库、密钥、缓存与临时文件不进入 Git。Git 只同步根说明、两个 repo-local skill、正式 workflow、论文导航、论文笔记、Base 和笔记使用的常见图片。
 
 正常发布事务内部运行导航重建与 Vault lint；独立维护时使用 `rebuild_paper_navigation.py --check` 和 `lint_vault.py`。Vault lint 必须通过属性枚举、目录形状、绝对路径、链接、embed、图片实际解码、孤儿图片、导航覆盖和读者可见流程元数据检查。

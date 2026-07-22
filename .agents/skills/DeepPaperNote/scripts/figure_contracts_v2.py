@@ -624,6 +624,105 @@ def materialize_inserted_assets(
     ]
 
 
+def finalize_note_figure_decisions(
+    *,
+    manifest: dict[str, Any],
+    provisional_decisions: dict[str, Any],
+    embedded_filenames: Iterable[str],
+) -> dict[str, Any]:
+    """Resolve current-run candidates from the image names actually embedded in a note.
+
+    The writer never edits a decision JSON.  A filename in ``images/`` either
+    names one asset in this run's manifest or fails closed.  Every provisional
+    target not used by the note becomes an ordinary omission; an asset not tied
+    to a planned target receives a deterministic extra target instead of being
+    silently discarded.
+    """
+    canonical_manifest = normalize_figure_manifest(manifest, verify_files=True)
+    canonical_provisional = normalize_figure_decisions(
+        provisional_decisions,
+        manifest=canonical_manifest,
+        require_final=False,
+    )
+    if canonical_manifest["status"] != "pass" or canonical_provisional["status"] == "fail":
+        failures = canonical_manifest["failures"] + canonical_provisional["failures"]
+        raise FigureContractError("; ".join(sorted(set(failures))))
+
+    assets = index_manifest_assets(canonical_manifest)
+    asset_by_filename = {
+        str(asset.get("filename", "")): asset_id for asset_id, asset in assets.items()
+    }
+    names = sorted({str(name).strip() for name in embedded_filenames if str(name).strip()})
+    unknown = [name for name in names if name not in asset_by_filename]
+    if unknown:
+        raise FigureContractError(
+            "Embedded image is not a current-run manifest candidate: " + ", ".join(unknown)
+        )
+    selected_ids = [asset_by_filename[name] for name in names]
+
+    original_entries = [
+        deepcopy(item)
+        for item in canonical_provisional.get("decisions", [])
+        if isinstance(item, dict)
+    ]
+    target_for_asset: dict[str, str] = {}
+    used_targets: set[str] = set()
+    for asset_id in selected_ids:
+        for entry in original_entries:
+            target_id = str(entry.get("target_id", "")).strip()
+            candidates = {
+                str(value).strip()
+                for value in entry.get("candidate_asset_ids", [])
+                if str(value).strip()
+            }
+            if asset_id in candidates and target_id and target_id not in used_targets:
+                target_for_asset[asset_id] = target_id
+                used_targets.add(target_id)
+                break
+
+    selected_by_target = {target: asset for asset, target in target_for_asset.items()}
+    final_entries: list[dict[str, Any]] = []
+    for entry in original_entries:
+        target_id = str(entry.get("target_id", "")).strip()
+        selected_asset = selected_by_target.get(target_id, "")
+        entry["selected_asset_id"] = selected_asset
+        entry["decision"] = "inserted" if selected_asset else "omitted"
+        entry["decision_reason"] = "embedded_in_note" if selected_asset else "not_embedded"
+        final_entries.append(entry)
+
+    for asset_id in selected_ids:
+        if asset_id in target_for_asset:
+            continue
+        asset = assets[asset_id]
+        final_entries.append(
+            {
+                "target_id": f"embedded:{asset_id}",
+                "display_label": str(asset.get("label", "")) or asset_id,
+                "document_id": str(asset.get("document_id", "")),
+                "decision": "inserted",
+                "selected_asset_id": asset_id,
+                "recommended_asset_id": asset_id,
+                "candidate_asset_ids": [asset_id],
+                "rejected_asset_ids": [],
+                "decision_reason": "embedded_in_note",
+            }
+        )
+
+    result = make_figure_decisions(
+        paper_id=str(canonical_manifest["paper_id"]),
+        run_id=str(canonical_manifest["run_id"]),
+        decisions=final_entries,
+    )
+    canonical_result = normalize_figure_decisions(
+        result,
+        manifest=canonical_manifest,
+        require_final=True,
+    )
+    if canonical_result["status"] != "pass":
+        raise FigureContractError("; ".join(canonical_result["failures"]))
+    return canonical_result
+
+
 def figure_note_alignment_issues(
     note_text: str,
     decisions: dict[str, Any],

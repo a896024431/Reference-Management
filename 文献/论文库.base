@@ -1,6 +1,7 @@
 filters:
   and:
     - file.inFolder("文献")
+    - '!file.inFolder("文献/Zotero已删除")'
     - file.name == "笔记"
     - type == "paper"
 properties:

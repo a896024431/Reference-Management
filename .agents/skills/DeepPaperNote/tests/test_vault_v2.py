@@ -76,6 +76,7 @@ def base_text() -> str:
     return """filters:
   and:
     - 'file.inFolder("文献")'
+    - '!file.inFolder("文献/Zotero已删除")'
     - 'file.name == "笔记"'
 views:
   - type: table
@@ -195,7 +196,11 @@ class BaseDefinitionTests(unittest.TestCase):
         definition = parse_base_definition(base_text())
         self.assertEqual(
             definition.global_filters,
-            ('file.inFolder("文献")', 'file.name == "\u7b14\u8bb0"'),
+            (
+                'file.inFolder("文献")',
+                '!file.inFolder("文献/Zotero已删除")',
+                'file.name == "\u7b14\u8bb0"',
+            ),
         )
         self.assertEqual(
             definition.views,
@@ -250,6 +255,23 @@ class VaultLintTests(unittest.TestCase):
 
             report = lint_vault(root)
 
+            self.assertEqual(
+                report["status"], "pass", json.dumps(report["issues"], ensure_ascii=False)
+            )
+
+    def test_zotero_deleted_archive_is_ignored_by_navigation_and_lint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            build_vault(root)
+            archive = root / "文献" / "Zotero已删除" / "QPC" / "Archived Paper"
+            archive.mkdir(parents=True)
+            (archive / "笔记.md").write_text("intentionally ignored", encoding="utf-8")
+            (archive / "extra.tmp").write_text("local archive", encoding="utf-8")
+
+            records = discover_notes(root)
+            report = lint_vault(root)
+
+            self.assertEqual(len(records), 1)
             self.assertEqual(
                 report["status"], "pass", json.dumps(report["issues"], ensure_ascii=False)
             )

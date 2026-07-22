@@ -12,17 +12,17 @@
 
 `scripts/run_pipeline_v2.py` 在创建 run 目录前检查 Python >= 3.10、PyMuPDF、`--max-pages` 和 `--vault-root`，随后：
 
-1. 解析唯一论文身份并合并元数据。
-2. 获取主文与补充材料，记录内容指纹、总页数和安全 Vault 相对路径。
+1. 从本地主文元数据、首页文字或镜像目录建立唯一论文身份。
+2. 从已镜像的主文与补充材料记录内容指纹、总页数和安全 Vault 相对路径。
 3. 逐页提取全文证据并分类论文类型。
 4. 提取图片与 caption-anchored 图表候选。
-5. 建立图表计划与候选排序。
+5. 建立当前 run 图表候选及其固定文件名。
 6. 构建无损 synthesis bundle。
 7. 写出 note-plan 模板和 run manifest。
 
 任一文档解析失败、页数变化、实际截断、OCR 覆盖低于 60%、无页面或论文类型所需证据缺失时，evidence 状态为 `fail`，处理流程以非零状态退出。确定性阶段通过只表示 synthesis bundle 已就绪。
 
-正式参数为本地 `--input`、必需的 `--vault-root`、`--offline`、可重复本地 `--supplement`，以及可选 `--run-id`、`--workdir`、`--max-pages`；0 表示全文。`--run-id` 只能是小写、非 Windows 保留名的安全目录名。主文和补充材料必须位于同一 `文献/<分类>/<论文目录>/` 中；禁止元数据查询和 URL 下载。
+正式参数为本地 `--input`、必需的 `--vault-root`、可重复本地 `--supplement`，以及可选 `--run-id`、`--max-pages`；0 表示全文。`--run-id` 只能是小写、非 Windows 保留名的安全目录名。所有 run 固定在 `.local/deeppapernote/runs/<run_id>/`。主文和补充材料必须位于同一 `文献/<分类>/<论文目录>/` 中；禁止元数据查询和 URL 下载。
 
 ## 模型与复核阶段
 
@@ -40,6 +40,8 @@
 
 `must_cover`、`key_claims`、`key_numbers`、`real_comparisons`、`section_plan` 和非空 `figure_intents` 的每个对象都必须有非空 `evidence_ids`；顶层 `evidence_ids` 必须恰好覆盖各条目关联的证据编号。用 `validate_note_plan_v2.py` 对 synthesis bundle 验证后才能写正文。
 
+正文写入固定 staging 后，若正文使用图片，必须只写 `![[images/<当前 manifest 文件名>]]`。随后由内部命令读取正文文件名并生成最终 decisions：已引用的当前候选为 `inserted`，未引用候选为 `omitted`；未知、拼错或旧 run 文件名失败。作者不手工编辑 figure JSON。
+
 正文完成后：
 
 正常的一次性交付默认使用子 agent 复核。主代理必须通过可用的多代理工具显式调用至少一个不同于作者的新子 agent，并把笔记、synthesis bundle 与复核要求交给它；主代理不得自行填写或代写审阅 JSON。质量与可读性可由同一个子 agent 分别完成并形成两份记录。只有用户明确选择时才等待人工复核；无法调用子 agent 且没有人工复核结果时停止，不得发布。
@@ -49,7 +51,7 @@
 3. 用 `record_note_review_v2.py --kind quality --author <作者>` 记录。
 4. 完整重读中文；正文有改动则重跑 lint 和质量审阅。
 5. 独立完成可读性审阅，再以 `--kind readability --author <作者> --lint <报告>` 记录。
-6. 构建 contact sheet 并记录视觉复核。
+6. 只有最终 decisions 包含 `inserted` 图片时，构建 contact sheet 并记录视觉复核；没有插图时跳过。
 
 审阅 JSON 必须给出 `reviewer`、`review_origin: subagent|human`、`independent: true`、分数和空的 `unresolved_issues`。作者与审阅者相同、低于 4/5、质量复核未覆盖至少三条不同结论、存在遗留问题，或笔记、完整 synthesis、evidence、passing lint 已修改而复核不再对应当前版本，都会失败。
 
@@ -59,9 +61,9 @@
 
 - 重新核验逐文档 evidence coverage、论文类型所需证据、evidence ID、本地 PDF 的读取前后 SHA-256 与实际页数，以及复核记录与当前完整 synthesis/evidence/lint 的内容绑定。
 - 从主文/补充材料推导 `evidence_level: full_text|full_text_supplement`。
-- 从 decisions 推导 `figure_status`：无决策为 `none_needed`；只有 placeholder 为 `placeholder_only`；placeholder 与 inserted 并存为 `partial`；无 placeholder 为 `complete`。
+- 从最终 decisions 推导 `figure_status`：没有实际插图（无 entries 或只有 omitted）为 `none_needed`；有 inserted 图片为 `complete`。历史 placeholder 状态只为兼容旧记录保留，不是新流程输出。
 - 拒绝待发布目录顶层的额外文件，以及 `images/` 中的目录或非图片文件。
-- 验证图片的 document/page/稳定身份、实际解码、内容指纹，并要求正文图片恰好等于已插入且通过视觉复核的本地图片集合；拒绝远程、data URI 与 HTML 图片。
+- 验证图片的 document/page/稳定身份、实际解码、内容指纹，并要求正文图片名恰好等于当前 manifest 的最终选择和复制后的本地图片集合；有插图时再要求对应视觉复核。拒绝远程、data URI 与 HTML 图片。
 - 从主文的 Vault 相对路径定位 `文献/<分类>/<论文目录>/`，只安全替换 `笔记.md` 与 `images/`；同目录 PDF/SI 不得被移动、删除或改写。已有笔记时仍须由 DOI/arXiv 或 authors+year 证明同一论文，失败时恢复受管内容。
 - 原子重建导航并执行严格 Vault lint；失败时恢复旧笔记和导航。
 - 最终检查通过后才安全更新 `.local/deeppapernote/published/<run_id>/`；新记录写入失败时恢复旧版本。

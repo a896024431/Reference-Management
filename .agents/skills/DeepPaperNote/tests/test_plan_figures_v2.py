@@ -17,7 +17,6 @@ def _item(label: str = "Fig. 2") -> dict:
         "section": "实验体系与测量",
         "reason": "核对器件结构与测量链。",
         "priority": 1,
-        "insert_mode": "placeholder",
     }
 
 
@@ -73,7 +72,6 @@ def test_first_reject_does_not_hide_later_usable_candidate() -> None:
     assert planned[0]["figure_asset_candidate"]["asset_id"] == "fig-usable"
     assert planned[0]["recommended_asset_id"] == "fig-usable"
     assert planned[0]["rejected_asset_ids"] == ["fig-reject"]
-    assert planned[0]["insert_mode"] == "placeholder"
 
 
 def test_duplicate_label_candidates_are_ranked_by_caption_and_quality() -> None:
@@ -96,7 +94,7 @@ def test_duplicate_label_candidates_are_ranked_by_caption_and_quality() -> None:
     assert ranked[0]["caption_similarity"] > ranked[1]["caption_similarity"]
 
 
-def test_planner_emits_placeholder_first_v2_decision_with_recommendation() -> None:
+def test_planner_emits_unembedded_v2_decision_with_recommendation() -> None:
     usable = _asset(
         "fig-usable",
         quality="usable",
@@ -110,8 +108,9 @@ def test_planner_emits_placeholder_first_v2_decision_with_recommendation() -> No
     decision = artifact["decisions"][0]
 
     assert artifact["schema_version"] == "2.0"
-    assert decision["decision"] == "placeholder"
+    assert decision["decision"] == "omitted"
     assert decision["selected_asset_id"] == ""
+    assert decision["decision_reason"] == "not_embedded"
     assert decision["recommended_asset_id"] == "fig-usable"
     assert decision["candidate_asset_ids"] == ["fig-usable"]
 

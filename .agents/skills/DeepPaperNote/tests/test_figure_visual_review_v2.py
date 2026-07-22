@@ -5,7 +5,7 @@ from pathlib import Path
 
 import fitz
 import pytest
-from build_figure_contact_sheet_v2 import build_contact_sheet
+from build_figure_contact_sheet_v2 import ContactSheetError, build_contact_sheet
 from contracts_v2 import ContractError, canonical_json_sha256
 from figure_contracts_v2 import (
     build_figure_asset_identity,
@@ -110,6 +110,24 @@ def _run_dir(tmp_path: Path) -> Path:
     return path
 
 
+def test_contact_sheet_rejects_a_vault_external_run_lookalike(tmp_path: Path) -> None:
+    source = tmp_path / "figure.png"
+    _make_png(source)
+    asset = _asset(source)
+    outside_run = (
+        tmp_path / "outside" / ".local" / "deeppapernote" / "runs" / RUN_ID
+    )
+    outside_run.mkdir(parents=True)
+
+    with pytest.raises(ContactSheetError, match="canonical"):
+        build_contact_sheet(
+            manifest=_manifest(asset),
+            decisions=_decisions(asset["asset_id"]),
+            run_dir=outside_run,
+            vault_root=tmp_path,
+        )
+
+
 def _review(asset_id: str, **overrides: object) -> dict:
     item = {
         "asset_id": asset_id,
@@ -141,21 +159,18 @@ def test_combination_candidates_are_grouped_and_sources_are_unchanged(tmp_path: 
         manifest=manifest,
         decisions=decisions,
         run_dir=_run_dir(tmp_path),
+        vault_root=tmp_path,
         columns=2,
         rows=1,
     )
 
     assert artifact["status"] == "pass"
     assert len(artifact["groups"]) == 1
-    assert set(artifact["groups"][0]["asset_ids"]) == {
-        complete["asset_id"],
-        rejected["asset_id"],
-    }
+    assert set(artifact["groups"][0]["asset_ids"]) == {complete["asset_id"]}
     cell_by_id = {cell["asset_id"]: cell for cell in artifact["cells"]}
     assert cell_by_id[complete["asset_id"]]["quality"] == "usable"
     assert "selected" in cell_by_id[complete["asset_id"]]["candidate_status"]
-    assert cell_by_id[rejected["asset_id"]]["quality"] == "reject"
-    assert cell_by_id[rejected["asset_id"]]["candidate_status"] == "rejected"
+    assert rejected["asset_id"] not in cell_by_id
     sheet = Path(artifact["sheets"][0]["path"])
     assert artifact["sheets"][0]["sha256"] == sha256_file(sheet)
     with fitz.open(sheet) as rendered:
@@ -175,6 +190,7 @@ def test_incomplete_crop_cannot_pass_inserted_review(tmp_path: Path) -> None:
         manifest=manifest,
         decisions=decisions,
         run_dir=_run_dir(tmp_path),
+        vault_root=tmp_path,
     )
 
     review = build_figure_visual_review(
@@ -201,6 +217,7 @@ def test_reject_cannot_be_overridden_to_inserted(tmp_path: Path) -> None:
         manifest=manifest,
         decisions=decisions,
         run_dir=_run_dir(tmp_path),
+        vault_root=tmp_path,
     )
     review_source = _review(asset["asset_id"], decision="inserted")
 
@@ -227,6 +244,7 @@ def test_manifest_hash_mismatch_invalidates_review_and_publish_gate(tmp_path: Pa
         manifest=manifest,
         decisions=decisions,
         run_dir=_run_dir(tmp_path),
+        vault_root=tmp_path,
     )
     review = build_figure_visual_review(
         manifest=manifest,
@@ -264,6 +282,7 @@ def test_stale_decisions_contact_sheet_cannot_review_current_decisions(
         manifest=manifest,
         decisions=old_decisions,
         run_dir=_run_dir(tmp_path),
+        vault_root=tmp_path,
     )
     current_decisions = deepcopy(old_decisions)
     current_decisions["decisions"][0]["decision_reason"] = "updated final rationale"
@@ -293,4 +312,26 @@ def test_stale_decisions_contact_sheet_cannot_review_current_decisions(
             manifest=manifest,
             decisions=current_decisions,
             contact_sheet=old_contact_sheet,
+        )
+
+
+def test_no_embedded_figure_needs_no_contact_sheet_or_visual_review() -> None:
+    manifest = _manifest()
+    decisions = make_figure_decisions(
+        paper_id=PAPER_ID,
+        run_id=RUN_ID,
+        decisions=[],
+    )
+
+    validate_visual_review_for_publish(
+        visual_review=None,
+        contact_sheet=None,
+        artifacts={"figure_manifest": manifest, "figure_decisions": decisions},
+    )
+
+    with pytest.raises(ContractError, match="No embedded image"):
+        validate_visual_review_for_publish(
+            visual_review={"unexpected": True},
+            contact_sheet=None,
+            artifacts={"figure_manifest": manifest, "figure_decisions": decisions},
         )

@@ -5,10 +5,8 @@ import copy
 from pathlib import Path
 
 import fitz
-import paper_record_v2
 import pytest
 import run_pipeline_v2
-from common import title_resolution
 from contracts_v2 import (
     ContractError,
     artifact_header,
@@ -21,7 +19,7 @@ from contracts_v2 import (
 )
 from extract_evidence_v2 import build_contract_evidence
 from lint_note_v2 import SOURCE_ANCHOR_RE, build_release_lint
-from paper_record_v2 import create_explicit_record, fetch_stage, resolve_stage
+from paper_record_v2 import create_local_record
 from publish_note_v2 import (
     expected_evidence_level,
     expected_figure_status,
@@ -33,6 +31,7 @@ from validate_note_plan_v2 import build_note_plan_artifact
 
 
 def _make_pdf(path: Path, pages: list[str], *, title: str = "Test Paper") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     document = fitz.open()
     try:
         document.set_metadata({"title": title})
@@ -47,6 +46,18 @@ def _make_pdf(path: Path, pages: list[str], *, title: str = "Test Paper") -> Pat
     finally:
         document.close()
     return path
+
+
+def _make_mirrored_pdf(
+    vault: Path,
+    filename: str,
+    pages: list[str],
+    *,
+    title: str = "Graphene quantum Hall transport experiment",
+) -> Path:
+    path = vault / "文献" / "QPC" / "Graphene quantum Hall transport experiment" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return _make_pdf(path, pages, title=title)
 
 
 def _evidence_pages() -> list[str]:
@@ -143,84 +154,26 @@ def _readability_review(*, reviewer: str) -> dict:
     }
 
 
-def test_title_resolution_deduplicates_provider_records_for_one_work() -> None:
-    query = "A Shared Quantum Transport Result"
-    resolution = title_resolution(
-        query,
-        [
-            {
-                "title": query,
-                "year": "2025",
-                "doi": "10.1000/shared",
-                "source": "crossref",
-            },
-            {
-                "title": query,
-                "year": "2025",
-                "doi": "10.1000/shared",
-                "source": "openalex",
-            },
-        ],
-    )
+def test_local_record_accepts_only_active_mirrored_pdfs(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    pdf = _make_mirrored_pdf(vault, "paper.pdf", _evidence_pages())
+    record = create_local_record(str(pdf), run_id="run-vault", vault_root=str(vault))
 
-    assert resolution["status"] == "ok"
-    assert resolution["record"]["doi"] == "10.1000/shared"
-
-
-def test_title_resolution_fails_when_multiple_credible_identities_remain() -> None:
-    query = "A Shared Quantum Transport Result"
-    resolution = title_resolution(
-        query,
-        [
-            {"title": query, "year": "2024", "doi": "10.1000/first"},
-            {"title": query, "year": "2025", "doi": "10.1000/second"},
-        ],
-    )
-
-    assert resolution["status"] == "ambiguous"
-    assert {item["doi"] for item in resolution["candidates"]} == {
-        "10.1000/first",
-        "10.1000/second",
-    }
-
-
-def test_resolve_stage_turns_ambiguous_title_into_failed_artifact(monkeypatch) -> None:
-    monkeypatch.setattr(
-        paper_record_v2,
-        "resolve_reference",
-        lambda value: {
-            "status": "ambiguous",
-            "source_type": "title_query",
-            "title": value,
-            "resolution_candidates": [{"title": value, "doi": "10.1000/a"}],
-        },
-    )
-
-    artifact = resolve_stage("Ambiguous Study", run_id="run-ambiguity")
-
-    assert artifact["status"] == "fail"
-    assert artifact["failures"] == ["paper_identity_ambiguous"]
-
-
-def test_raw_local_fetch_records_only_safe_vault_relative_path(tmp_path: Path) -> None:
-    pdf = _make_pdf(
-        tmp_path / "paper.pdf",
-        _evidence_pages(),
-        title="Graphene quantum Hall transport experiment",
-    )
-    resolved = resolve_stage(str(pdf), run_id="run-vault")
-
-    fetched = fetch_stage(
-        resolved,
-        supplements=[],
-        dest_dir=str(tmp_path / "downloads"),
-        vault_root=str(tmp_path),
-    )
-
-    assert fetched["status"] == "pass"
-    document = fetched["paper_record"]["documents"][0]
-    assert document["vault_path"] == "paper.pdf"
+    document = record["paper_record"]["documents"][0]
+    assert document["vault_path"] == "文献/QPC/Graphene quantum Hall transport experiment/paper.pdf"
+    assert document["source"] == "local_mirrored_pdf"
     assert Path(document["path"]).is_absolute()
+
+    outside = _make_pdf(tmp_path / "outside.pdf", _evidence_pages())
+    with pytest.raises(ContractError, match="under 文献"):
+        create_local_record(str(outside), run_id="run-outside", vault_root=str(vault))
+
+    archived = _make_pdf(
+        vault / "文献" / "Zotero已删除" / "QPC" / "Old paper" / "paper.pdf",
+        _evidence_pages(),
+    )
+    with pytest.raises(ContractError, match="active PDF"):
+        create_local_record(str(archived), run_id="run-archive", vault_root=str(vault))
 
 
 @pytest.mark.parametrize(
@@ -250,14 +203,12 @@ def test_run_id_accepts_expected_pipeline_characters() -> None:
 
 
 def test_full_text_truncation_is_a_hard_failure(tmp_path: Path) -> None:
-    pdf = _make_pdf(tmp_path / "paper.pdf", _evidence_pages())
-    record = create_explicit_record(
-        {
-            "title": "Graphene quantum Hall transport experiment",
-            "main_pdf": str(pdf),
-        },
+    vault = tmp_path / "vault"
+    pdf = _make_mirrored_pdf(vault, "paper.pdf", _evidence_pages())
+    record = create_local_record(
+        str(pdf),
         run_id="run-truncated",
-        vault_root=str(tmp_path),
+        vault_root=str(vault),
     )
 
     evidence = build_contract_evidence(record, max_pages=2)
@@ -267,10 +218,12 @@ def test_full_text_truncation_is_a_hard_failure(tmp_path: Path) -> None:
 
 
 def test_scanned_or_blank_pdf_requires_ocr_and_fails(tmp_path: Path) -> None:
-    pdf = _make_pdf(tmp_path / "blank.pdf", ["", "", ""])
-    record = create_explicit_record(
-        {"title": "Blank scanned study", "main_pdf": str(pdf)},
+    vault = tmp_path / "vault"
+    pdf = _make_mirrored_pdf(vault, "blank.pdf", ["", "", ""], title="Blank scanned study")
+    record = create_local_record(
+        str(pdf),
         run_id="run-ocr",
+        vault_root=str(vault),
     )
 
     evidence = build_contract_evidence(record)
@@ -311,18 +264,12 @@ def test_document_parse_failure_is_not_degraded(tmp_path: Path) -> None:
 
 
 def test_strict_evidence_validator_checks_coverage_identity_and_file_sha(tmp_path: Path) -> None:
-    pdf = _make_pdf(
-        tmp_path / "paper.pdf",
-        _evidence_pages(),
-        title="Graphene quantum Hall transport experiment",
-    )
-    record = create_explicit_record(
-        {
-            "title": "Graphene quantum Hall transport experiment",
-            "main_pdf": str(pdf),
-        },
+    vault = tmp_path / "vault"
+    pdf = _make_mirrored_pdf(vault, "paper.pdf", _evidence_pages())
+    record = create_local_record(
+        str(pdf),
         run_id="run-strict-evidence",
-        vault_root=str(tmp_path),
+        vault_root=str(vault),
     )
     evidence = build_contract_evidence(record)
 
@@ -464,87 +411,6 @@ def test_environment_gate_rejects_unimportable_fitz(monkeypatch, tmp_path: Path)
         run_pipeline_v2.validate_environment(args)
 
     assert list(tmp_path.iterdir()) == []
-
-
-def test_offline_fetch_never_attempts_doi_metadata_network(monkeypatch, tmp_path: Path) -> None:
-    record = artifact_header(
-        "paper_record", paper_id="doi:10.1000/offline", run_id="run-offline-doi"
-    )
-    record["paper_record"] = {
-        "paper_id": record["paper_id"],
-        "metadata": {"title": "Offline DOI paper", "doi": "10.1000/offline"},
-        "documents": [],
-    }
-    calls: list[dict] = []
-    monkeypatch.setattr(
-        paper_record_v2,
-        "enrich_metadata",
-        lambda metadata: calls.append(metadata) or metadata,
-    )
-
-    fetched = fetch_stage(
-        record,
-        supplements=[],
-        dest_dir=str(tmp_path / "downloads"),
-        offline=True,
-    )
-
-    assert fetched["status"] == "fail"
-    assert fetched["failures"] == ["offline_main_pdf_missing"]
-    assert calls == []
-
-
-def test_direct_pdf_download_refreshes_title_from_pdf_identity(monkeypatch, tmp_path: Path) -> None:
-    pdf = _make_pdf(
-        tmp_path / "download.pdf",
-        _evidence_pages(),
-        title="Recovered Canonical Paper Title",
-    )
-    resolved = resolve_stage(
-        "https://example.org/download.pdf?token=abc",
-        run_id="run-direct-pdf",
-    )
-    monkeypatch.setattr(
-        paper_record_v2,
-        "_materialize_source",
-        lambda *args, **kwargs: (pdf, "downloaded", "https://example.org/download.pdf"),
-    )
-
-    fetched = fetch_stage(resolved, supplements=[], dest_dir=str(tmp_path / "downloads"))
-
-    assert fetched["status"] == "pass", fetched["failures"]
-    assert fetched["paper_record"]["metadata"]["title"] == "Recovered Canonical Paper Title"
-    assert fetched["paper_id"].startswith("title:")
-
-
-def test_direct_pdf_download_without_trustworthy_title_fails_closed(
-    monkeypatch, tmp_path: Path
-) -> None:
-    pdf_path = tmp_path / "opaque-8f6e2c.pdf"
-    pdf = fitz.open()
-    try:
-        pdf.new_page()
-        pdf.save(pdf_path)
-    finally:
-        pdf.close()
-    resolved = resolve_stage(
-        "https://example.org/opaque-8f6e2c.pdf",
-        run_id="run-direct-pdf-unknown",
-    )
-    monkeypatch.setattr(
-        paper_record_v2,
-        "_materialize_source",
-        lambda *args, **kwargs: (
-            pdf_path,
-            "downloaded",
-            "https://example.org/opaque-8f6e2c.pdf",
-        ),
-    )
-
-    fetched = fetch_stage(resolved, supplements=[], dest_dir=str(tmp_path / "downloads"))
-
-    assert fetched["status"] == "fail"
-    assert any("trustworthy title" in failure for failure in fetched["failures"])
 
 
 def test_note_plan_requires_nested_evidence_bindings() -> None:

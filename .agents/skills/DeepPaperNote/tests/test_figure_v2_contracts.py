@@ -8,6 +8,7 @@ from figure_contracts_v2 import (
     FigureContractError,
     build_figure_asset_identity,
     figure_note_alignment_issues,
+    finalize_note_figure_decisions,
     make_figure_decisions,
     make_figure_manifest,
     materialize_decision,
@@ -67,6 +68,7 @@ def _decisions(asset_id: str, *, outcome: str = "inserted") -> dict:
                 "selected_asset_id": asset_id if outcome == "inserted" else "",
                 "candidate_asset_ids": [asset_id],
                 "rejected_asset_ids": [],
+                "decision_reason": "embedded_in_note" if outcome == "inserted" else "not_embedded",
             }
         ],
     )
@@ -105,6 +107,33 @@ def test_manifest_to_materialize_round_trip_is_hash_verified(tmp_path: Path) -> 
     assert copied.read_bytes() == source.read_bytes()
     note = f"![[文献/QPC/Test/images/{asset['filename']}]]"
     assert figure_note_alignment_issues(note, decisions, materialized=materialized) == []
+
+
+def test_embedded_filename_finalizer_selects_only_current_manifest_assets(tmp_path: Path) -> None:
+    source = tmp_path / "candidate.png"
+    source.write_bytes(b"deterministic-png-fixture")
+    asset = _asset(source)
+    manifest = _manifest(asset)
+    provisional = _decisions(asset["asset_id"], outcome="omitted")
+
+    finalized = finalize_note_figure_decisions(
+        manifest=manifest,
+        provisional_decisions=provisional,
+        embedded_filenames=[asset["filename"]],
+    )
+
+    decision = finalized["decisions"][0]
+    assert finalized["status"] == "pass"
+    assert decision["decision"] == "inserted"
+    assert decision["selected_asset_id"] == asset["asset_id"]
+    assert decision["decision_reason"] == "embedded_in_note"
+
+    with pytest.raises(FigureContractError, match="current-run manifest"):
+        finalize_note_figure_decisions(
+            manifest=manifest,
+            provisional_decisions=provisional,
+            embedded_filenames=["old-or-misspelled.png"],
+        )
 
 
 def test_manifest_identity_and_paper_document_provenance_are_recomputed(

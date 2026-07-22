@@ -25,6 +25,8 @@ LOCAL_PDF_LIBRARY_ROOT = "\u6587\u732e"
 PAPER_LIBRARY_PATH = Path(LOCAL_PDF_LIBRARY_ROOT)
 NAVIGATION_PATH = PAPER_LIBRARY_PATH / "\u8bba\u6587\u5bfc\u822a.md"
 BASE_PATH = PAPER_LIBRARY_PATH / "\u8bba\u6587\u5e93.base"
+ZOTERO_DELETED_COLLECTION = "Zotero\u5df2\u5220\u9664"
+ZOTERO_DELETED_PATH = PAPER_LIBRARY_PATH / ZOTERO_DELETED_COLLECTION
 
 REQUIRED_PROPERTIES = (
     "type",
@@ -107,6 +109,7 @@ BASE_REQUIRED_VIEWS = (
 )
 BASE_REQUIRED_FILTERS = (
     f'file.inFolder("{LOCAL_PDF_LIBRARY_ROOT}")',
+    f'!file.inFolder("{ZOTERO_DELETED_PATH.as_posix()}")',
     'file.name == "\u7b14\u8bb0"',
 )
 
@@ -457,6 +460,15 @@ def is_absolute_local_path(value: str) -> bool:
     )
 
 
+def is_zotero_deleted_library_path(path: PurePosixPath) -> bool:
+    """Return whether a Vault-relative path belongs to the ignored archive tree."""
+    return (
+        len(path.parts) >= 2
+        and path.parts[0].casefold() == LOCAL_PDF_LIBRARY_ROOT.casefold()
+        and path.parts[1].casefold() == ZOTERO_DELETED_COLLECTION.casefold()
+    )
+
+
 def is_safe_library_pdf_path(value: str) -> bool:
     """Accept only a non-escaping Vault-relative PDF below 文献/<collection>/<paper>/."""
     raw = urllib.parse.unquote(str(value or "")).strip().replace("\\", "/")
@@ -466,6 +478,7 @@ def is_safe_library_pdf_path(value: str) -> bool:
         and not path.is_absolute()
         and len(path.parts) >= 4
         and path.parts[0] == LOCAL_PDF_LIBRARY_ROOT
+        and not is_zotero_deleted_library_path(path)
         and path.suffix.casefold() == ".pdf"
         and all(part not in {"", ".", ".."} for part in path.parts)
     )
@@ -612,9 +625,16 @@ def discover_notes(vault_root: Path) -> list[NoteRecord]:
     library = vault_root / PAPER_LIBRARY_PATH
     if not library.exists():
         return []
+    deleted_root = library / ZOTERO_DELETED_COLLECTION
     records: list[NoteRecord] = []
     for path in sorted(library.rglob(NOTE_FILENAME), key=lambda item: item.as_posix().casefold()):
         if not path.is_file():
+            continue
+        try:
+            path.relative_to(deleted_root)
+        except ValueError:
+            pass
+        else:
             continue
         text = path.read_text(encoding="utf-8-sig")
         parsed = parse_frontmatter(text)
@@ -722,6 +742,7 @@ def is_local_pdf_library_link(link: WikiLink) -> bool:
         and not path.is_absolute()
         and len(path.parts) >= 4
         and path.parts[0] == LOCAL_PDF_LIBRARY_ROOT
+        and not is_zotero_deleted_library_path(path)
         and path.suffix.casefold() == ".pdf"
         and all(part not in {"", ".", ".."} for part in path.parts)
     )
@@ -1087,6 +1108,8 @@ def _validate_library_structure(
                 if entry.is_file() and entry.name in {NAVIGATION_PATH.name, BASE_PATH.name}:
                     continue
                 if entry.is_dir():
+                    if entry.name == ZOTERO_DELETED_COLLECTION:
+                        continue
                     if entry.name.startswith("."):
                         _issue(
                             issues,

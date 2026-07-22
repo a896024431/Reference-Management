@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import fitz
+import paper_record_v2
 import publish_note_v2
 import pytest
 import run_pipeline_v2
@@ -61,7 +62,6 @@ def _make_pipeline_pdf(path: Path) -> Path:
 def _run_pipeline(
     *,
     input_pdf: Path,
-    workdir: Path,
     vault_root: Path,
     run_id: str,
     max_pages: int,
@@ -72,11 +72,8 @@ def _run_pipeline(
         str(SCRIPTS / "run_pipeline_v2.py"),
         "--input",
         str(input_pdf),
-        "--offline",
         "--run-id",
         run_id,
-        "--workdir",
-        str(workdir),
         "--vault-root",
         str(vault_root),
         "--max-pages",
@@ -93,7 +90,7 @@ def _run_pipeline(
     )
 
 
-def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
+def test_real_pdf_pipeline_passes_and_truncation_rolls_up_failure(
     tmp_path: Path,
 ) -> None:
     vault = tmp_path / "vault"
@@ -105,7 +102,6 @@ def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
 
     passed = _run_pipeline(
         input_pdf=pdf,
-        workdir=workdir,
         vault_root=vault,
         run_id="integration-pass",
         max_pages=0,
@@ -126,6 +122,11 @@ def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
     ):
         assert load_json_object(passed_dir / name)["status"] == "pass"
     run_manifest = load_json_object(passed_dir / "run_manifest.json")
+    staging = passed_dir / "staging"
+    assert staging.is_dir()
+    assert (staging / "images").is_dir()
+    assert list((staging / "images").iterdir()) == []
+    assert run_manifest["staging_dir"] == str(staging)
     assert run_manifest["downstream_pending"][-1] == "publish_note_v2"
     assert "rebuild_paper_navigation" not in run_manifest["downstream_pending"]
     assert "lint_vault" not in run_manifest["downstream_pending"]
@@ -148,7 +149,6 @@ def test_real_pdf_offline_pipeline_passes_and_truncation_rolls_up_failure(
 
     truncated = _run_pipeline(
         input_pdf=pdf,
-        workdir=workdir,
         vault_root=vault,
         run_id="integration-truncated",
         max_pages=1,
@@ -174,27 +174,35 @@ def test_pipeline_formal_entry_rejects_nonmirrored_inputs_and_legacy_input_recor
     mirrored.write_bytes(b"not parsed because validation fails first")
     outside = tmp_path / "outside.pdf"
     outside.write_bytes(b"local but not mirrored")
+    archived = vault / "文献" / "Zotero已删除" / "QPC" / "Old Paper" / "main.pdf"
+    archived.parent.mkdir(parents=True)
+    archived.write_bytes(b"local archive")
 
     rejected_input = _run_pipeline(
         input_pdf=outside,
-        workdir=vault / ".local" / "deeppapernote" / "runs",
         vault_root=vault,
         run_id="reject-outside",
         max_pages=0,
     )
-    rejected_workdir = _run_pipeline(
-        input_pdf=mirrored,
-        workdir=tmp_path / "runs-outside-vault",
+    rejected_archive = _run_pipeline(
+        input_pdf=archived,
         vault_root=vault,
-        run_id="reject-workdir",
+        run_id="reject-archive",
         max_pages=0,
     )
 
     assert rejected_input.returncode != 0
     assert "must be a local PDF under 文献/" in rejected_input.stderr
-    assert rejected_workdir.returncode != 0
-    assert "--workdir must stay under" in rejected_workdir.stderr
-    assert "--input-record" not in run_pipeline_v2.parser().format_help()
+    assert rejected_archive.returncode != 0
+    assert "must be an active PDF" in rejected_archive.stderr
+    pipeline_help = run_pipeline_v2.parser().format_help()
+    assert "--input-record" not in pipeline_help
+    assert "--workdir" not in pipeline_help
+    assert "--offline" not in pipeline_help
+    record_help = paper_record_v2.parser().format_help()
+    assert "--stage" not in record_help
+    assert "--dest-dir" not in record_help
+    assert "--offline" not in record_help
 
 
 def test_pipeline_rejects_supplement_from_another_paper_directory(tmp_path: Path) -> None:
@@ -208,7 +216,6 @@ def test_pipeline_rejects_supplement_from_another_paper_directory(tmp_path: Path
 
     result = _run_pipeline(
         input_pdf=main,
-        workdir=vault / ".local" / "deeppapernote" / "runs",
         vault_root=vault,
         run_id="reject-cross-paper-si",
         max_pages=0,

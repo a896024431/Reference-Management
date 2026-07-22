@@ -23,7 +23,9 @@ API_BASE = "http://127.0.0.1:23119/api"
 ROOT_COLLECTION = "ZJU/课题组"
 LIBRARY = "文献"
 UNCATEGORIZED_COLLECTION = "未分类"
-INDEX_VERSION = 1
+ARCHIVE_COLLECTION = "Zotero已删除"
+INDEX_VERSION = 2
+ZOTERO_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 WINDOWS_DEVICE_NAMES = frozenset(
     {
         "con",
@@ -38,6 +40,13 @@ WINDOWS_DEVICE_NAMES = frozenset(
 
 class SyncError(RuntimeError):
     pass
+
+
+def _zotero_key(value: object, *, label: str) -> str:
+    key = str(value or "").strip()
+    if not key or not ZOTERO_KEY_PATTERN.fullmatch(key):
+        raise SyncError(f"{label} 缺少或包含不安全的 Zotero key：{key!r}")
+    return key
 
 
 def _open(request: urllib.request.Request) -> Any:
@@ -96,6 +105,15 @@ def _safe_name(value: str, fallback: str) -> str:
     if base.casefold() in WINDOWS_DEVICE_NAMES:
         value = f"{base}_{separator}{extension}"
     return value or fallback
+
+
+def _visible_name(value: object, *, label: str) -> str:
+    """Return a real user-visible name; never fall back to a Zotero key."""
+    raw = str(value or "").strip()
+    safe = _safe_name(raw, "")
+    if not safe:
+        raise SyncError(f"{label} 为空或无法作为 Windows 文件名使用")
+    return safe
 
 
 def _sha256(path: Path) -> str:
@@ -188,9 +206,18 @@ def _relative_collection(
         data = collections.get(current)
         if data is None or not data["parent"]:
             raise SyncError("文献条目不在已配置的 Zotero 根分类中")
-        names.append(_safe_name(data["name"], current))
+        names.append(
+            _visible_name(data["name"], label=f"Zotero 分类 {current} 的名称")
+        )
         current = data["parent"]
-    return tuple(reversed(names)) or (UNCATEGORIZED_COLLECTION,)
+    relative = tuple(reversed(names)) or (UNCATEGORIZED_COLLECTION,)
+    if relative[0].casefold() == ARCHIVE_COLLECTION.casefold():
+        raise SyncError(f"{ARCHIVE_COLLECTION} 是 Vault 的保留归档目录名，不能作为 Zotero 一级分类")
+    return relative
+
+
+def _paper_folder(title: str) -> str:
+    return _visible_name(title, label="论文题名")
 
 
 def _is_pdf(record: dict[str, Any]) -> bool:
@@ -211,35 +238,41 @@ def _collect_papers(
     selected = root
     if collection_scope:
         selected = _collection_key(collections, _parts(root_path) + _parts(collection_scope))
+    selected_collections = set(_descendants(collections, selected))
     parent_items: dict[str, tuple[dict[str, Any], str]] = {}
     standalone: dict[str, tuple[dict[str, Any], str]] = {}
-    for collection in _descendants(collections, selected):
+    memberships: dict[str, set[str]] = {}
+    # Inspect the configured root even for a scoped refresh. Zotero permits an
+    # item to belong to multiple collections, while this mirror has one stable
+    # directory per parent key.
+    for collection in _descendants(collections, root):
         endpoint = f"users/0/collections/{urllib.parse.quote(collection)}/items/top?format=json&v=3"
         for record in _json_request(base, endpoint):
             data = record.get("data")
-            key = str(record.get("key", "")).strip()
-            if not key or not isinstance(data, dict) or data.get("deleted"):
+            if not isinstance(data, dict) or data.get("deleted"):
                 continue
+            key = _zotero_key(record.get("key"), label="Zotero 条目")
             if _is_pdf(record) and not str(data.get("parentItem", "")).strip():
-                previous = standalone.get(key)
-                if previous and previous[1] != collection:
-                    raise SyncError(f"独立 PDF {key} 同时属于多个目标分类")
-                standalone[key] = (record, collection)
+                memberships.setdefault(key, set()).add(collection)
+                if collection in selected_collections:
+                    standalone[key] = (record, collection)
             elif data.get("itemType") not in {"attachment", "note"}:
-                previous = parent_items.get(key)
-                if previous and previous[1] != collection:
-                    raise SyncError(f"条目 {key} 同时属于多个目标分类，需要用户决定")
-                parent_items[key] = (record, collection)
-    if item_key and item_key not in parent_items and item_key not in standalone:
+                memberships.setdefault(key, set()).add(collection)
+                if collection in selected_collections:
+                    parent_items[key] = (record, collection)
+    requested_key = _zotero_key(item_key, label="--item-key") if item_key else ""
+    if requested_key and requested_key not in parent_items and requested_key not in standalone:
         raise SyncError(f"在 {root_path} 中未找到 Zotero 条目 {item_key}")
 
     papers: list[dict[str, Any]] = []
     for key, (record, collection) in sorted(parent_items.items()):
-        if item_key and key != item_key:
+        if requested_key and key != requested_key:
             continue
+        if len(memberships.get(key, set())) != 1:
+            raise SyncError(f"条目 {key} 同时属于多个 Zotero 分类；请先保留一个分类再同步")
         children = _json_request(base, f"users/0/items/{urllib.parse.quote(key)}/children?format=json&v=3")
         attachments = [child for child in children if _is_pdf(child)]
-        title = _safe_name(str(record["data"].get("title", "")), key)
+        title = _visible_name(record["data"].get("title", ""), label=f"文献条目 {key} 的题名")
         papers.append(
             {
                 "key": key,
@@ -249,10 +282,20 @@ def _collect_papers(
             }
         )
     for key, (record, collection) in sorted(standalone.items()):
-        if item_key and key != item_key:
+        if requested_key and key != requested_key:
             continue
+        if len(memberships.get(key, set())) != 1:
+            raise SyncError(f"独立 PDF {key} 同时属于多个 Zotero 分类；请先保留一个分类再同步")
         source = _attachment_path(base, record)
-        title = _safe_name(str(record["data"].get("title", "")) or source.stem, key)
+        raw_title = str(record["data"].get("title", "")).strip()
+        raw_filename = str(record["data"].get("filename", "")).strip()
+        fallback_title = Path(raw_filename).stem if raw_filename else source.stem
+        title = _visible_name(
+            raw_title or fallback_title,
+            label=f"独立 PDF {key} 的题名",
+        )
+        if not raw_title and title.casefold() == key.casefold():
+            raise SyncError(f"独立 PDF {key} 缺少可见题名，不能用 Zotero key 作为论文目录名")
         papers.append(
             {
                 "key": key,
@@ -264,6 +307,113 @@ def _collect_papers(
     return sorted(papers, key=lambda item: (item["collection"], item["title"].casefold(), item["key"]))
 
 
+def _filename(value: object, *, label: str) -> str:
+    name = str(value or "").strip()
+    if (
+        not name
+        or "/" in name
+        or "\\" in name
+        or name in {".", ".."}
+        or Path(name).suffix.casefold() != ".pdf"
+    ):
+        raise SyncError(f"同步索引中的 {label} 文件名无效：{name!r}")
+    return name
+
+
+def _stored_directory_component(value: object, *, label: str) -> str:
+    """Validate a canonical visible path component saved in the local index."""
+    if not isinstance(value, str):
+        raise SyncError(f"同步索引中的 {label} 无效")
+    normalized = _visible_name(value, label=f"同步索引中的 {label}")
+    if value != normalized:
+        raise SyncError(f"同步索引中的 {label} 未使用规范可见名称：{value!r}")
+    return normalized
+
+
+def _stored_collection_parts(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise SyncError("同步索引中的 collection_parts 无效")
+    parts = tuple(
+        _stored_directory_component(part, label=f"collection_parts[{index}]")
+        for index, part in enumerate(value)
+    )
+    if not parts:
+        raise SyncError("同步索引中的 collection_parts 不能为空")
+    if parts and parts[0].casefold() == ARCHIVE_COLLECTION.casefold():
+        raise SyncError(f"同步索引中的 collection_parts 不能指向 {ARCHIVE_COLLECTION}")
+    return parts
+
+
+def _index_item(value: object, *, parent_key: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SyncError(f"同步索引中的条目 {parent_key} 无效")
+    relative_dir = value.get("relative_dir")
+    attachments = value.get("attachments")
+    if not isinstance(relative_dir, str) or not isinstance(attachments, dict):
+        raise SyncError(f"同步索引中的条目 {parent_key} 格式无效")
+    collection_parts = _stored_collection_parts(value.get("collection_parts"))
+    folder_name = _stored_directory_component(value.get("folder_name"), label="folder_name")
+    normalized: dict[str, dict[str, str]] = {}
+    for raw_key, raw_attachment in attachments.items():
+        attachment_key = _zotero_key(raw_key, label="附件")
+        if not isinstance(raw_attachment, dict):
+            raise SyncError(f"同步索引中的附件 {attachment_key} 无效")
+        normalized[attachment_key] = {
+            "filename": _filename(raw_attachment.get("filename"), label="附件")
+        }
+    result: dict[str, Any] = {
+        "relative_dir": relative_dir,
+        "collection_parts": collection_parts,
+        "folder_name": folder_name,
+        "attachments": normalized,
+    }
+    return result
+
+
+def _migrate_v1_index(data: dict[str, Any]) -> dict[str, Any]:
+    old_items = data.get("items")
+    if not isinstance(old_items, dict):
+        raise SyncError("同步索引格式不受支持")
+    items: dict[str, Any] = {}
+    for raw_parent_key, raw_item in old_items.items():
+        parent_key = _zotero_key(raw_parent_key, label="条目")
+        if not isinstance(raw_item, dict):
+            raise SyncError(f"同步索引中的条目 {parent_key} 无效")
+        relative_dir = raw_item.get("relative_dir")
+        old_attachments = raw_item.get("attachments")
+        if not isinstance(relative_dir, str) or not isinstance(old_attachments, dict):
+            raise SyncError(f"同步索引中的条目 {parent_key} 格式无效")
+        folder_name = _visible_name(raw_item.get("title", ""), label=f"旧版条目 {parent_key} 的题名")
+        raw_collection_parts = raw_item.get("collection_path", [])
+        if not isinstance(raw_collection_parts, list):
+            raise SyncError(f"旧版条目 {parent_key} 的 collection_path 无效")
+        collection_parts = tuple(
+            _visible_name(part, label=f"旧版条目 {parent_key} 的分类")
+            for part in raw_collection_parts
+        )
+        if collection_parts and collection_parts[0].casefold() == ARCHIVE_COLLECTION.casefold():
+            raise SyncError(f"旧版条目 {parent_key} 指向保留归档目录")
+        attachments: dict[str, dict[str, str]] = {}
+        for raw_attachment_key, raw_attachment in old_attachments.items():
+            attachment_key = _zotero_key(raw_attachment_key, label="附件")
+            if not isinstance(raw_attachment, dict):
+                raise SyncError(f"同步索引中的附件 {attachment_key} 无效")
+            relative_path = raw_attachment.get("relative_path")
+            if not isinstance(relative_path, str) or "\\" in relative_path:
+                raise SyncError(f"同步索引中的附件路径无效：{relative_path!r}")
+            attachments[attachment_key] = {
+                "filename": _filename(relative_path.rsplit("/", maxsplit=1)[-1], label="附件")
+            }
+        item: dict[str, Any] = {
+            "relative_dir": relative_dir,
+            "collection_parts": collection_parts,
+            "folder_name": folder_name,
+            "attachments": attachments,
+        }
+        items[parent_key] = item
+    return {"version": INDEX_VERSION, "items": items, "migrated_from_v1": True}
+
+
 def _load_index(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"version": INDEX_VERSION, "items": {}}
@@ -271,9 +421,17 @@ def _load_index(path: Path) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SyncError(f"同步索引无法读取：{path}") from exc
-    if not isinstance(data, dict) or data.get("version") != INDEX_VERSION or not isinstance(data.get("items"), dict):
+    if not isinstance(data, dict) or not isinstance(data.get("items"), dict):
         raise SyncError(f"同步索引格式不受支持：{path}")
-    return data
+    if data.get("version") == 1:
+        return _migrate_v1_index(data)
+    if data.get("version") != INDEX_VERSION:
+        raise SyncError(f"同步索引格式不受支持：{path}")
+    items = {
+        _zotero_key(parent_key, label="条目"): _index_item(item, parent_key=str(parent_key))
+        for parent_key, item in data["items"].items()
+    }
+    return {"version": INDEX_VERSION, "items": items}
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -286,16 +444,46 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _copy(source: Path, destination: Path) -> None:
+def _copy(source: Path, destination: Path, source_hash: str) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.sync-{uuid.uuid4().hex}")
     try:
         shutil.copy2(source, temporary)
-        if _sha256(temporary) != _sha256(source):
+        if _sha256(temporary) != source_hash:
             raise SyncError(f"复制后的 PDF 哈希不一致：{source.name}")
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _retire_replaced_attachment(old_path: Path, destination: Path) -> None:
+    """Remove an obsolete attachment without deleting a Windows case-only rename."""
+    if not old_path.is_file():
+        return
+    try:
+        same_file = destination.is_file() and old_path.samefile(destination)
+    except OSError:
+        same_file = False
+    case_only_rename = (
+        same_file
+        and old_path.name != destination.name
+        and old_path.name.casefold() == destination.name.casefold()
+    )
+    if not case_only_rename:
+        old_path.unlink()
+        return
+
+    # NTFS treats the two spellings as one directory entry.  Rename through a
+    # fresh sibling so the requested spelling is retained without unlinking
+    # the just-copied PDF.
+    temporary = old_path.with_name(f".{old_path.name}.rename-{uuid.uuid4().hex}")
+    os.replace(old_path, temporary)
+    try:
+        os.replace(temporary, destination)
+    except OSError:
+        if temporary.exists() and not old_path.exists():
+            os.replace(temporary, old_path)
+        raise
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -317,63 +505,85 @@ def _from_relative(vault: Path, value: str, *, label: str) -> Path:
     return candidate
 
 
-def _attachment_entry(value: Any) -> dict[str, str] | None:
-    if not isinstance(value, dict):
-        return None
-    path = value.get("relative_path")
-    digest = value.get("sha256")
-    if not isinstance(path, str) or not isinstance(digest, str):
-        return None
-    return {"relative_path": path, "sha256": digest}
-
-
-def _report_stale_attachment(
-    report: dict[str, Any], vault: Path, item_key: str, attachment_key: str, value: Any
-) -> None:
-    entry = _attachment_entry(value)
-    if entry is None:
-        return
-    path = _from_relative(vault, entry["relative_path"], label="附件")
-    if path.is_file():
-        report["stale_attachments"].append(
-            {"item_key": item_key, "attachment_key": attachment_key, "path": entry["relative_path"]}
+def _managed_directory(
+    vault: Path,
+    item: dict[str, Any],
+    *,
+    label: str,
+    allow_legacy_v1_shallow: bool = False,
+) -> Path:
+    value = item["relative_dir"]
+    directory = _from_relative(vault, value, label=label)
+    library = (vault / LIBRARY).resolve()
+    try:
+        directory.relative_to(library)
+    except ValueError as exc:
+        raise SyncError(f"同步索引中的 {label} 不在文献目录下：{value!r}") from exc
+    collection_parts = tuple(item["collection_parts"])
+    folder_name = str(item["folder_name"])
+    if not collection_parts:
+        if not allow_legacy_v1_shallow:
+            raise SyncError(f"同步索引中的 {label} 不是 文献/<分类>/<论文目录>：{value!r}")
+        expected = (library / folder_name).resolve()
+    else:
+        expected = library.joinpath(*collection_parts, folder_name).resolve()
+    if directory != expected:
+        raise SyncError(
+            f"同步索引中的 {label} 与受管理论文目录身份不一致：{value!r}"
         )
+    return directory
 
 
-def _indexed_attachment_uses_name(previous: dict[str, Any], key: str, filename: str) -> bool:
-    entry = _attachment_entry(previous.get(key))
-    if entry is None:
-        return False
-    return entry["relative_path"].rsplit("/", maxsplit=1)[-1].casefold() == filename.casefold()
-
-
-def _attachment_filename(
-    source: Path,
-    key: str,
-    names: set[str],
-    target: Path,
-    previous: dict[str, Any],
-    zotero_filename: str,
-) -> str:
-    original = _safe_name(zotero_filename or source.name, f"{key}.pdf")
-    if Path(original).suffix.casefold() != ".pdf":
-        original = _safe_name(source.name, f"{key}.pdf")
-    suffix = Path(original).suffix or ".pdf"
-    stem = original[: -len(suffix)] if suffix else original
-    attempt = 0
-    while True:
-        if attempt == 0:
-            filename = original
-        elif attempt == 1:
-            filename = f"{stem} [{key}]{suffix}"
-        else:
-            filename = f"{stem} [{key}]-{attempt - 1}{suffix}"
-        destination = target / filename
-        known = _indexed_attachment_uses_name(previous, key, filename)
-        if filename.casefold() not in names and (not destination.exists() or known):
-            names.add(filename.casefold())
-            return filename
+def _archive_destination(vault: Path, source: Path) -> Path:
+    library = (vault / LIBRARY).resolve()
+    relative = source.resolve().relative_to(library)
+    base = library / ARCHIVE_COLLECTION / Path(*relative.parts)
+    candidate = base
+    attempt = 2
+    while candidate.exists():
+        candidate = base.with_name(f"{base.name} [archived-{attempt}]")
         attempt += 1
+    return candidate
+
+
+def _attachment_filename(source: Path, key: str, zotero_filename: str) -> str:
+    original = _visible_name(zotero_filename or source.name, label=f"附件 {key} 的文件名")
+    if Path(original).suffix.casefold() != ".pdf":
+        original = _visible_name(source.name, label=f"附件 {key} 的本地文件名")
+    if not zotero_filename and Path(original).stem.casefold() == key.casefold():
+        raise SyncError(f"附件 {key} 缺少可见文件名，不能用 Zotero key 作为本地文件名")
+    return _filename(original, label="附件")
+
+
+def _attachment_specs(base: str, paper_key: str, attachments: list[Any]) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    keys: set[str] = set()
+    for record in sorted(
+        attachments,
+        key=lambda item: str(item.get("key", "")).casefold() if isinstance(item, dict) else "",
+    ):
+        if not isinstance(record, dict):
+            raise SyncError(f"文献条目 {paper_key} 包含无效附件")
+        attachment_key = _zotero_key(record.get("key"), label=f"文献条目 {paper_key} 的 PDF 附件")
+        if attachment_key in keys:
+            raise SyncError(f"文献条目 {paper_key} 的 PDF 附件 key 重复：{attachment_key}")
+        keys.add(attachment_key)
+        source = _attachment_path(base, record)
+        data = record.get("data")
+        zotero_filename = str(data.get("filename", "")).strip() if isinstance(data, dict) else ""
+        specs.append(
+            {
+                "key": attachment_key,
+                "source": source,
+                "source_hash": _sha256(source),
+                "filename": _attachment_filename(source, attachment_key, zotero_filename),
+            }
+        )
+    return specs
+
+
+def _empty_directory(path: Path) -> bool:
+    return path.is_dir() and not any(path.iterdir())
 
 
 def sync(
@@ -391,14 +601,48 @@ def sync(
     library = vault / LIBRARY
     local = vault / ".local" / "zotero-pdf-sync"
     index_path = local / "index.json"
-    old_items = _load_index(index_path)["items"]
-    groups: dict[tuple[tuple[str, ...], str], list[dict[str, Any]]] = {}
+    loaded_index = _load_index(index_path)
+    old_items = loaded_index["items"]
+    allow_legacy_v1_shallow = bool(loaded_index.get("migrated_from_v1"))
+    if allow_legacy_v1_shallow and any(
+        not item["collection_parts"] for item in old_items.values()
+    ) and not complete:
+        raise SyncError("旧版浅层同步索引只能在一次完整同步中迁移")
+    owned_directories: dict[str, str] = {}
+    for parent_key, item in old_items.items():
+        directory = _managed_directory(
+            vault,
+            item,
+            label="论文目录",
+            allow_legacy_v1_shallow=allow_legacy_v1_shallow,
+        )
+        relative = _relative(directory, vault)
+        marker = relative.casefold()
+        previous_owner = owned_directories.get(marker)
+        if previous_owner and previous_owner != parent_key:
+            raise SyncError(
+                f"同步索引中的条目 {previous_owner} 和 {parent_key} 指向同一论文目录：{relative}"
+            )
+        owned_directories[marker] = parent_key
+    desired_target_owners: dict[str, list[str]] = {}
+    preflight_keys: set[str] = set()
     for paper in papers:
-        groups.setdefault((tuple(paper["collection"]), paper["title"]), []).append(paper)
-    folders = {
-        paper["key"]: _safe_name(paper["title"], paper["key"])
-        + (f" [{paper['key']}]" if len(groups[(tuple(paper['collection']), paper['title'])]) > 1 else "")
-        for paper in papers
+        paper_key = _zotero_key(paper.get("key"), label="文献条目")
+        if paper_key in preflight_keys:
+            raise SyncError(f"同步结果包含重复 Zotero 条目：{paper_key}")
+        preflight_keys.add(paper_key)
+        raw_collection = paper.get("collection")
+        if not isinstance(raw_collection, (list, tuple)) or not raw_collection:
+            raise SyncError(f"文献条目 {paper_key} 的分类路径无效")
+        collection = tuple(_safe_name(str(part), "分类") for part in raw_collection)
+        if collection[0].casefold() == ARCHIVE_COLLECTION.casefold():
+            raise SyncError(f"{ARCHIVE_COLLECTION} 是保留归档目录，不能作为同步目标")
+        title = _visible_name(paper.get("title", ""), label=f"文献条目 {paper_key} 的题名")
+        folder_name = _paper_folder(title)
+        marker = _relative(library.joinpath(*collection, folder_name), vault).casefold()
+        desired_target_owners.setdefault(marker, []).append(paper_key)
+    same_title_targets = {
+        marker: sorted(keys) for marker, keys in desired_target_owners.items() if len(keys) > 1
     }
     report: dict[str, Any] = {
         "status": "pass",
@@ -408,129 +652,272 @@ def sync(
         "copied": [],
         "unchanged": [],
         "moved_directories": [],
-        "protected_moves": [],
-        "protected_pdfs": [],
+        "renamed_attachments": [],
+        "deleted_attachments": [],
+        "archived_directories": [],
         "directory_conflicts": [],
         "file_conflicts": [],
-        "stale_attachments": [],
+        "archive_missing_directories": [],
     }
     # A collection or single-item refresh must not discard records outside its scope.
     new_items: dict[str, Any] = dict(old_items)
     seen_items: set[str] = set()
     for paper in papers:
-        paper_key = str(paper.get("key", "")).strip()
-        if not paper_key:
-            raise SyncError("文献条目缺少 Zotero key")
+        paper_key = _zotero_key(paper.get("key"), label="文献条目")
+        if paper_key in seen_items:
+            raise SyncError(f"同步结果包含重复 Zotero 条目：{paper_key}")
         seen_items.add(paper_key)
         attachments = paper.get("attachments")
         if not isinstance(attachments, list):
             raise SyncError(f"文献条目 {paper_key} 的附件列表无效")
-        target = library.joinpath(*paper["collection"], folders[paper_key])
+        raw_collection = paper.get("collection")
+        if not isinstance(raw_collection, (list, tuple)) or not raw_collection:
+            raise SyncError(f"文献条目 {paper_key} 的分类路径无效")
+        collection = tuple(_safe_name(str(part), "分类") for part in raw_collection)
+        if collection[0].casefold() == ARCHIVE_COLLECTION.casefold():
+            raise SyncError(f"{ARCHIVE_COLLECTION} 是保留归档目录，不能作为同步目标")
+        title = _visible_name(paper.get("title", ""), label=f"文献条目 {paper_key} 的题名")
+        folder_name = _paper_folder(title)
+        target = library.joinpath(*collection, folder_name)
         target_relative = _relative(target, vault)
-        old = old_items.get(paper_key, {})
-        previous = old.get("attachments", {}) if isinstance(old, dict) else {}
-        previous = previous if isinstance(previous, dict) else {}
-        old_relative_value = old.get("relative_dir") if isinstance(old, dict) else ""
-        old_relative = old_relative_value if isinstance(old_relative_value, str) else ""
-        if not attachments:
-            if isinstance(old, dict):
-                for attachment_key, value in previous.items():
-                    _report_stale_attachment(report, vault, paper_key, str(attachment_key), value)
-            continue
-        if old_relative and old_relative != target_relative:
-            old_target = _from_relative(vault, old_relative, label="论文目录")
-            if old_target.exists() and (old_target / "笔记.md").exists():
-                report["protected_moves"].append(
-                    {"item_key": paper_key, "from": old_relative, "to": target_relative}
-                )
-                # Keep the local paper path stable and continue refreshing its attachments there.
-                target = old_target
-                target_relative = old_relative
-            elif old_target.exists() and target.exists():
-                report["directory_conflicts"].append(
-                    {"item_key": paper_key, "from": old_relative, "to": target_relative}
-                )
-                continue
-            elif old_target.exists():
-                if dry_run:
-                    report["moved_directories"].append(
-                        {"item_key": paper_key, "from": old_relative, "to": target_relative, "dry_run": True}
-                    )
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(old_target, target)
-                    report["moved_directories"].append(
-                        {"item_key": paper_key, "from": old_relative, "to": target_relative}
-                    )
-        if not dry_run:
-            target.mkdir(parents=True, exist_ok=True)
-        attachment_index: dict[str, dict[str, str]] = {}
-        attachment_names: set[str] = set()
-        for record in sorted(
-            attachments,
-            key=lambda item: str(item.get("key", "")).casefold() if isinstance(item, dict) else "",
-        ):
-            if not isinstance(record, dict):
-                raise SyncError(f"文献条目 {paper_key} 包含无效附件")
-            key = str(record.get("key", "")).strip()
-            if not key:
-                raise SyncError(f"文献条目 {paper_key} 的 PDF 附件缺少 Zotero key")
-            source = _attachment_path(base, record)
-            data = record.get("data")
-            zotero_filename = str(data.get("filename", "")).strip() if isinstance(data, dict) else ""
-            filename = _attachment_filename(
-                source, key, attachment_names, target, previous, zotero_filename
+        if target_relative.casefold() in same_title_targets:
+            report["directory_conflicts"].append(
+                {
+                    "item_keys": same_title_targets[target_relative.casefold()],
+                    "path": target_relative,
+                    "reason": "same_title_directory",
+                }
             )
-            destination = target / filename
-            destination_relative = _relative(destination, vault)
-            source_hash = _sha256(source)
-            previous_entry = _attachment_entry(previous.get(key))
+            continue
+        specs = _attachment_specs(base, paper_key, attachments)
+        old = old_items.get(paper_key)
+        if old is None and not specs:
+            continue
+        previous = old["attachments"] if old else {}
+        old_relative = old["relative_dir"] if old else ""
+        old_target = (
+            _managed_directory(
+                vault,
+                old,
+                label="论文目录",
+                allow_legacy_v1_shallow=allow_legacy_v1_shallow,
+            )
+            if old
+            else None
+        )
+        moving = bool(old_target and old_target != target and old_target.exists())
+
+        if old_target and old_target != target and old_target.exists() and not old_target.is_dir():
+            report["directory_conflicts"].append(
+                {"item_key": paper_key, "from": old_relative, "to": target_relative}
+            )
+            continue
+        if old_target and old_target != target and target.exists():
+            report["directory_conflicts"].append(
+                {"item_key": paper_key, "from": old_relative, "to": target_relative}
+            )
+            continue
+        if old is None and target.exists():
+            report["directory_conflicts"].append(
+                {"item_key": paper_key, "path": target_relative, "reason": "unindexed_target_exists"}
+            )
+            continue
+        inspection_target = old_target if moving and old_target is not None else target
+        if inspection_target.exists() and not inspection_target.is_dir():
+            report["directory_conflicts"].append(
+                {"item_key": paper_key, "path": _relative(inspection_target, vault)}
+            )
+            continue
+
+        previous_names = {
+            entry["filename"].casefold(): attachment_key
+            for attachment_key, entry in previous.items()
+        }
+        desired_keys = {str(spec["key"]) for spec in specs}
+        desired_names: dict[str, str] = {}
+        conflict = False
+        for spec in specs:
+            filename = str(spec["filename"])
+            existing_key = desired_names.get(filename.casefold())
+            if existing_key and existing_key != str(spec["key"]):
+                report["file_conflicts"].append(
+                    {
+                        "item_key": paper_key,
+                        "attachment_keys": sorted([existing_key, str(spec["key"])]),
+                        "path": f"{target_relative}/{filename}",
+                        "reason": "same_attachment_filename",
+                    }
+                )
+                conflict = True
+            desired_names[filename.casefold()] = filename
+        if inspection_target.is_dir():
+            for attachment_key, entry in previous.items():
+                previous_path = inspection_target / entry["filename"]
+                if previous_path.exists() and not previous_path.is_file():
+                    report["file_conflicts"].append(
+                        {
+                            "item_key": paper_key,
+                            "attachment_key": attachment_key,
+                            "path": _relative(previous_path, vault),
+                        }
+                    )
+                    conflict = True
+        for spec in specs:
+            attachment_key = str(spec["key"])
+            existing_owner = previous_names.get(str(spec["filename"]).casefold())
+            if existing_owner and existing_owner != attachment_key:
+                report["file_conflicts"].append(
+                    {
+                        "item_key": paper_key,
+                        "attachment_key": attachment_key,
+                        "path": f"{target_relative}/{spec['filename']}",
+                    }
+                )
+                conflict = True
+            destination = inspection_target / str(spec["filename"])
             if destination.exists() and not destination.is_file():
                 report["file_conflicts"].append(
-                    {"item_key": paper_key, "attachment_key": key, "path": destination_relative}
+                    {
+                        "item_key": paper_key,
+                        "attachment_key": attachment_key,
+                        "path": f"{target_relative}/{spec['filename']}",
+                    }
                 )
-                if previous_entry is not None:
-                    attachment_index[key] = previous_entry
-                continue
+                conflict = True
+        if conflict:
+            continue
+
+        if moving:
+            if dry_run:
+                report["moved_directories"].append(
+                    {"item_key": paper_key, "from": old_relative, "to": target_relative, "dry_run": True}
+                )
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(old_target, target)
+                report["moved_directories"].append(
+                    {"item_key": paper_key, "from": old_relative, "to": target_relative}
+                )
+        working_target = inspection_target if dry_run and moving else target
+        attachment_index: dict[str, dict[str, str]] = {}
+        for spec in specs:
+            attachment_key = str(spec["key"])
+            filename = str(spec["filename"])
+            destination = working_target / filename
+            destination_relative = f"{target_relative}/{filename}"
+            source_hash = str(spec["source_hash"])
+            previous_entry = previous.get(attachment_key)
             if destination.exists() and _sha256(destination) == source_hash:
                 report["unchanged"].append(destination_relative)
-            elif destination.exists() and (target / "笔记.md").exists():
-                report["protected_pdfs"].append(
-                    {"item_key": paper_key, "attachment_key": key, "path": destination_relative}
-                )
-                attachment_index[key] = previous_entry or {
-                    "relative_path": destination_relative,
-                    "sha256": _sha256(destination),
-                }
-                continue
             elif dry_run:
                 report["copied"].append({"path": destination_relative, "dry_run": True})
             else:
-                _copy(source, destination)
+                _copy(Path(spec["source"]), destination, source_hash)
                 report["copied"].append(destination_relative)
-            attachment_index[key] = {"relative_path": destination_relative, "sha256": source_hash}
-        for attachment_key, value in previous.items():
-            old_entry = _attachment_entry(value)
-            current_entry = _attachment_entry(attachment_index.get(str(attachment_key)))
-            if old_entry is None:
+            if previous_entry and previous_entry["filename"] != filename:
+                old_filename = previous_entry["filename"]
+                old_path = working_target / old_filename
+                if old_path.is_file():
+                    if not dry_run:
+                        _retire_replaced_attachment(old_path, destination)
+                    renamed: dict[str, Any] = {
+                        "item_key": paper_key,
+                        "attachment_key": attachment_key,
+                        "from": f"{target_relative}/{old_filename}",
+                        "to": destination_relative,
+                    }
+                    if dry_run:
+                        renamed["dry_run"] = True
+                    report["renamed_attachments"].append(renamed)
+            attachment_index[attachment_key] = {"filename": filename}
+        for attachment_key, previous_entry in previous.items():
+            if attachment_key in desired_keys:
                 continue
-            if current_entry is None or current_entry["relative_path"] != old_entry["relative_path"]:
-                _report_stale_attachment(report, vault, paper_key, str(attachment_key), old_entry)
+            old_path = working_target / previous_entry["filename"]
+            if old_path.is_file():
+                deleted: dict[str, Any] = {
+                    "item_key": paper_key,
+                    "attachment_key": attachment_key,
+                    "path": f"{target_relative}/{previous_entry['filename']}",
+                }
+                if dry_run:
+                    deleted["dry_run"] = True
+                else:
+                    old_path.unlink()
+                report["deleted_attachments"].append(deleted)
+        if working_target.is_dir():
+            for local_pdf in working_target.iterdir():
+                if (
+                    local_pdf.is_file()
+                    and local_pdf.suffix.casefold() == ".pdf"
+                    and local_pdf.name.casefold() not in desired_names
+                ):
+                    deleted: dict[str, Any] = {
+                        "item_key": paper_key,
+                        "attachment_key": "",
+                        "path": f"{target_relative}/{local_pdf.name}",
+                        "reason": "not_in_zotero",
+                    }
+                    if dry_run:
+                        deleted["dry_run"] = True
+                    else:
+                        local_pdf.unlink()
+                    report["deleted_attachments"].append(deleted)
+        if not dry_run and not specs and _empty_directory(target):
+            target.rmdir()
         new_items[paper_key] = {
-            "title": paper["title"],
-            "collection_path": list(paper["collection"]),
             "relative_dir": target_relative,
+            "collection_parts": collection,
+            "folder_name": folder_name,
             "attachments": attachment_index,
         }
     if complete:
         for paper_key, old in old_items.items():
-            if str(paper_key) in seen_items or not isinstance(old, dict):
+            if paper_key in seen_items:
                 continue
-            previous = old.get("attachments")
-            if not isinstance(previous, dict):
+            old_target = _managed_directory(
+                vault,
+                old,
+                label="论文目录",
+                allow_legacy_v1_shallow=allow_legacy_v1_shallow,
+            )
+            if old_target.exists() and not old_target.is_dir():
+                report["directory_conflicts"].append(
+                    {"item_key": paper_key, "path": old["relative_dir"], "reason": "managed_path_not_directory"}
+                )
                 continue
-            for attachment_key, value in previous.items():
-                _report_stale_attachment(report, vault, str(paper_key), str(attachment_key), value)
+            if old_target.is_dir():
+                archive_target = _archive_destination(vault, old_target)
+                archive_relative = _relative(archive_target, vault)
+                if dry_run:
+                    report["archived_directories"].append(
+                        {
+                            "item_key": paper_key,
+                            "from": old["relative_dir"],
+                            "to": archive_relative,
+                            "dry_run": True,
+                        }
+                    )
+                else:
+                    archive_target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(old_target, archive_target)
+                    report["archived_directories"].append(
+                        {"item_key": paper_key, "from": old["relative_dir"], "to": archive_relative}
+                    )
+            else:
+                report["archive_missing_directories"].append(
+                    {"item_key": paper_key, "path": old["relative_dir"]}
+                )
+            new_items.pop(paper_key, None)
+    if any(not item["collection_parts"] for item in new_items.values()):
+        raise SyncError(
+            "旧版浅层同步索引未完成迁移；请处理冲突后重新执行一次完整同步"
+        )
+    if any(
+        report[key]
+        for key in ("directory_conflicts", "file_conflicts", "archive_missing_directories")
+    ):
+        report["status"] = "attention"
     report["summary"] = {key: len(value) for key, value in report.items() if isinstance(value, list)}
     if not dry_run:
         now = datetime.now(timezone.utc)

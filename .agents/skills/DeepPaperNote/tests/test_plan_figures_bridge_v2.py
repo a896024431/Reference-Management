@@ -101,14 +101,14 @@ def test_empty_evidence_inventory_bridges_only_anchored_usable_caption() -> None
 
     figures = artifact["figure_plan"]["figures"]
     decisions = artifact["figure_decisions"]["decisions"]
-    assert artifact["status"] == "degraded"
+    assert artifact["status"] == "pass"
     assert artifact["caption_bridge"]["created"] == 1
     assert len(figures) == len(decisions) == 1
     assert figures[0]["source_asset_id"] == "usable-fig-1"
     assert decisions[0]["recommended_asset_id"] == "usable-fig-1"
     assert decisions[0]["selected_asset_id"] == ""
-    assert decisions[0]["decision"] == "placeholder"
-    assert decisions[0]["decision_reason"] == "awaiting_semantic_confirmation"
+    assert decisions[0]["decision"] == "omitted"
+    assert decisions[0]["decision_reason"] == "not_embedded"
     assert "reject-fig-2" not in decisions[0]["candidate_asset_ids"]
     assert "body-reference-fig-3" not in decisions[0]["candidate_asset_ids"]
 

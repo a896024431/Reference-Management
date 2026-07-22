@@ -1,22 +1,23 @@
-# Figure Decisions
+# 图表
 
-## 两个受众
+## 读者内容与本地记录
 
-figure manifest、decisions、contact sheet 与视觉复核属于本地处理记录。永久笔记只面向读者，只能出现通过来源与可用性强制检查的真实图片、原始 Fig./Table 编号和自然图注。
+figure manifest、decisions、contact sheet 与视觉复核都属于当前 run 的本地处理记录。永久笔记只面向读者，只能出现真实图片、原始 Fig./Table 编号和自然图注。
 
 不得把可见 placeholder、候选 ID、裁剪坐标、内容指纹、建议位置、QA 术语或隐藏 figure 注释写进 `文献/`。
 
-## 决策流程
+## 简单的内部流程
 
-1. 先确定视觉对科学论证的作用。
-2. 用原始 caption、附近正文、页码和 document ID 确认身份。
-3. 独立检查主体完整、轴与图例可读、表体存在、复合图无误导性裁断。
-4. 记录 `inserted`、`placeholder` 或 `omitted`、目标章节和原因。
-5. 只有语义与视觉复核都通过时才插入。
+1. 从当前主文/SI 提取候选；每个候选都只有当前 run 的固定 manifest 文件名。
+2. 写正文时，作者只决定是否嵌入该文件名，例如 `![[images/fig-...png|420]]`；不编辑 decisions JSON。
+3. `plan_figures_v2.py --finalize-note` 从正文实际引用的文件名生成最终选择。名称必须在当前 manifest 中唯一存在；未知、拼错或旧 run 名称立即失败。
+4. 已引用的候选为 `inserted`，未引用的候选为 `omitted`。新流程不产生 placeholder。
+5. 只对 `inserted` 图片建立 contact sheet 并做轻量视觉复核；没有插图时这两步不运行。
+6. 发布器从当前 manifest 复制已选图片，并核对正文引用、最终选择、`images/` 内容和哈希完全相同。
 
 拒绝 caption-only、正文主导页面、缺失表体、不可读坐标、混入其他 caption 的图片，以及会误导的局部复合图。图号匹配本身不足以插入。
 
-证据提取没有识别 caption、但 manifest 中存在 `anchored_label_v2` 且质量为 usable 的资产时，`plan_figures_v2.py` 可建立 bridge intent；必须保留 document ID、原始标签和来源页。
+证据提取没有识别 caption、但 manifest 中存在 `anchored_label_v2` 且质量为 usable 的资产时，`plan_figures_v2.py` 可建立 bridge intent；仍只允许正文实际引用其中的当前文件名。
 
 ## 发布格式与状态
 
@@ -27,10 +28,6 @@ figure manifest、decisions、contact sheet 与视觉复核属于本地处理记
 
 保留原始 Fig. X、Table X、Fig. Sx 或 Extended Data Fig. X，不按笔记顺序重编号。图注解释科学价值，不解释提取过程。
 
-placeholder 与 omitted 只留在 JSON。没有需要决策的重要视觉时 decisions 可为空，frontmatter 为 `figure_status: none_needed`。发布程序按 decisions 自动推导并核对 `none_needed`、`placeholder_only`、`partial` 或 `complete`。
+没有实际插图时，frontmatter 为 `figure_status: none_needed`；有插图时为 `complete`。旧笔记的 `placeholder_only` 与 `partial` 仅保留兼容性，不是新流程输出。
 
-## 视觉复核与内容指纹
-
-`build_figure_contact_sheet_v2.py` 只使用 manifest 候选，完整写好 PNG 后再替换旧文件；`record_figure_visual_review_v2.py` 记录 manifest、decisions 与 contact sheet 之间的对应关系。
-
-插入的图片必须绑定当前 paper record 中存在的 document/page，稳定身份、contact sheet decisions、视觉复核和文件内容指纹都必须匹配，并且在笔记中有对应的 `images/<文件名>` embed。远程、data URI、HTML 图片、未被笔记引用的图片和指向不存在图片的链接都会阻止发布。`images/` 中的非图片文件或子目录同样阻止发布。
+远程、data URI、HTML 图片、未被笔记引用的图片和指向不存在图片的链接都会阻止发布。`images/` 中的非图片文件或子目录同样阻止发布。

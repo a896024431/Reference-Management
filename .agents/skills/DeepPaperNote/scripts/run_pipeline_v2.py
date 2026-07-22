@@ -31,19 +31,8 @@ def parser() -> argparse.ArgumentParser:
         help="Local main PDF already mirrored under 文献/.",
     )
     command.add_argument("--run-id", default="")
-    command.add_argument(
-        "--workdir",
-        default="",
-        help="Run-local directory; defaults to <vault>/.local/deeppapernote/runs.",
-    )
     command.add_argument("--vault-root", required=True)
     command.add_argument("--supplement", action="append", default=[])
-    command.add_argument(
-        "--offline",
-        action="store_true",
-        required=True,
-        help="Required: process only local PDFs and disable metadata queries and downloads.",
-    )
     command.add_argument("--max-pages", type=int, default=0, help="0 means all pages.")
     return command
 
@@ -74,9 +63,14 @@ def validate_environment(args: argparse.Namespace) -> None:
             relative = path.relative_to(library.resolve())
         except ValueError as exc:
             raise SystemExit(f"{label} must be a local PDF under 文献/: {path}") from exc
-        if not path.is_file() or path.suffix.casefold() != ".pdf" or len(relative.parts) < 3:
+        if (
+            not path.is_file()
+            or path.suffix.casefold() != ".pdf"
+            or len(relative.parts) < 3
+            or relative.parts[0].casefold() == "Zotero已删除".casefold()
+        ):
             raise SystemExit(
-                f"{label} must be a PDF in 文献/<collection>/<paper>/: {path}"
+                f"{label} must be an active PDF in 文献/<collection>/<paper>/: {path}"
             )
         return path
 
@@ -90,18 +84,9 @@ def validate_environment(args: argparse.Namespace) -> None:
             raise SystemExit("Main and supplementary PDFs must not be repeated")
         seen.add(supplement_pdf)
 
-    local_runs = (root / ".local" / "deeppapernote" / "runs").resolve()
-    workdir = Path(args.workdir).expanduser().resolve() if args.workdir else local_runs
-    try:
-        workdir.relative_to(local_runs)
-    except ValueError as exc:
-        raise SystemExit(
-            "--workdir must stay under <vault>/.local/deeppapernote/runs/"
-        ) from exc
     args.input = str(main_pdf)
     args.supplement = [str(Path(value).expanduser().resolve()) for value in args.supplement]
     args.vault_root = str(root)
-    args.workdir = str(workdir)
 
 
 def require_pass(path: Path, *, artifact_type: str) -> dict[str, Any]:
@@ -170,8 +155,15 @@ def main() -> None:
     args = parser().parse_args()
     validate_environment(args)
     run_id = validate_run_id(args.run_id or utc_run_id())
-    run_dir = Path(args.workdir).expanduser().resolve() / run_id
+    run_dir = (
+        Path(args.vault_root).resolve()
+        / ".local"
+        / "deeppapernote"
+        / "runs"
+        / run_id
+    )
     run_dir.mkdir(parents=True, exist_ok=False)
+    staging_dir = run_dir / "staging"
     scripts = Path(__file__).resolve().parent
     python = sys.executable
     log: list[dict[str, Any]] = []
@@ -187,60 +179,22 @@ def main() -> None:
         "run_manifest": run_dir / "run_manifest.json",
     }
     try:
-        resolved = run_dir / "paper_record.resolved.json"
-        metadata = run_dir / "paper_record.metadata.json"
-        resolve_command = [
+        record_command = [
             python,
             str(scripts / "paper_record_v2.py"),
-            "--stage",
-            "resolve",
             "--input",
             str(args.input),
             "--run-id",
             run_id,
-            "--output",
-            str(resolved),
             "--vault-root",
             args.vault_root,
-            "--offline",
-        ]
-        run(resolve_command, stage="resolve_paper", log=log, artifact_path=resolved)
-        metadata_command = [
-            python,
-            str(scripts / "paper_record_v2.py"),
-            "--stage",
-            "metadata",
-            "--input",
-            str(resolved),
-            "--output",
-            str(metadata),
-            "--offline",
-        ]
-        run(
-            metadata_command,
-            stage="collect_metadata",
-            log=log,
-            artifact_path=metadata,
-        )
-        fetch_command = [
-            python,
-            str(scripts / "paper_record_v2.py"),
-            "--stage",
-            "fetch",
-            "--input",
-            str(metadata),
-            "--dest-dir",
-            str(run_dir / "pdfs"),
             "--output",
             str(paths["paper_record"]),
-            "--vault-root",
-            args.vault_root,
-            "--offline",
         ]
         for supplement in args.supplement:
-            fetch_command.extend(["--supplement", supplement])
+            record_command.extend(["--supplement", supplement])
         run(
-            fetch_command,
+            record_command,
             stage="record_local_pdfs",
             log=log,
             artifact_path=paths["paper_record"],
@@ -326,6 +280,7 @@ def main() -> None:
         )
         bundle = load_json_object(paths["synthesis_bundle"])
         write_plan_template(bundle, paths["note_plan_template"])
+        (staging_dir / "images").mkdir(parents=True, exist_ok=False)
         report = artifact_header(
             "run_manifest",
             paper_id=str(bundle["paper_id"]),
@@ -335,15 +290,17 @@ def main() -> None:
         report.update(
             {
                 "completion_stage": "synthesis_bundle",
+                "staging_dir": str(staging_dir),
                 "downstream_pending": [
                     "model_note_plan",
                     "validate_note_plan_v2",
                     "model_note_draft",
+                    "finalize_embedded_figures",
                     "lint_note_v2",
                     "quality_review",
                     "readability_review",
-                    "figure_contact_sheet",
-                    "figure_visual_review",
+                    "figure_contact_sheet_if_embedded",
+                    "figure_visual_review_if_embedded",
                     "publish_note_v2",
                 ],
                 "artifacts": {
@@ -372,6 +329,7 @@ def main() -> None:
             {
                 "run_id": run_id,
                 "run_dir": str(run_dir),
+                "staging_dir": str(staging_dir),
                 **{key: str(value) for key, value in paths.items()},
             },
             ensure_ascii=False,

@@ -18,13 +18,13 @@
 !.agents/skills/zotero-pdf-sync/
 !.agents/skills/zotero-pdf-sync/**
 
-# Keep skill-specific output not covered by the global rules below out of the vault.
-.agents/skills/DeepPaperNote/site/.astro/
-.agents/skills/DeepPaperNote/.agent-work/
-.agents/skills/DeepPaperNote/.venv/
-.agents/skills/DeepPaperNote/venv/
-.agents/skills/DeepPaperNote/dist/
-.agents/skills/DeepPaperNote/build/
+# Keep in-skill development output out of the vault.
+.agents/skills/**/site/.astro/
+.agents/skills/**/.agent-work/
+.agents/skills/**/.venv/
+.agents/skills/**/venv/
+.agents/skills/**/dist/
+.agents/skills/**/build/
 *.egg-info/
 
 # Obsidian outputs mirror the Zotero collection hierarchy under 文献/.
@@ -40,6 +40,9 @@
 !文献/**/images/*.webp
 !文献/**/images/*.gif
 !文献/**/images/*.svg
+
+# Terminal archive from a full Zotero mirror is deliberately local-only.
+文献/Zotero已删除/
 
 # Local machine state and private data, including the Zotero mirror index and reports.
 .local/

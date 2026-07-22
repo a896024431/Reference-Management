@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render run-local contact sheets for canonical v2 figure candidates."""
+"""Render run-local contact sheets only for images actually embedded in a note."""
 
 from __future__ import annotations
 
@@ -56,15 +56,20 @@ def _ascii(value: object) -> str:
     return str(value).encode("ascii", "backslashreplace").decode("ascii")
 
 
-def _validate_run_dir(run_dir: Path, run_id: str) -> Path:
+def _validate_run_dir(run_dir: Path, run_id: str, vault_root: Path) -> Path:
     resolved = run_dir.expanduser().resolve()
-    lowered = [part.casefold() for part in resolved.parts]
-    sequence = [".local", "deeppapernote", "runs", run_id.casefold()]
-    matches = any(lowered[index : index + 4] == sequence for index in range(len(lowered) - 3))
-    if not matches or resolved.name != run_id:
-        raise ContactSheetError("Contact sheets must stay under .local/deeppapernote/runs/<run_id>")
-    if any(part.casefold() in {"research", "\u6587\u732e"} for part in resolved.parts):
-        raise ContactSheetError("Contact sheets must never be written under a paper library")
+    expected = (
+        vault_root.expanduser().resolve()
+        / ".local"
+        / "deeppapernote"
+        / "runs"
+        / run_id
+    )
+    if resolved != expected:
+        raise ContactSheetError(
+            "Contact sheets must use the canonical "
+            "<vault>/.local/deeppapernote/runs/<run_id> directory"
+        )
     return resolved
 
 
@@ -98,10 +103,19 @@ def _group_assets(
     manifest: dict[str, Any], decisions: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     roles = _candidate_roles(decisions)
+    selected_ids = {
+        str(entry.get("selected_asset_id", "")).strip()
+        for entry in decisions.get("decisions", [])
+        if isinstance(entry, dict)
+        and entry.get("decision") == "inserted"
+        and str(entry.get("selected_asset_id", "")).strip()
+    }
     grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
     source_hashes: dict[str, str] = {}
     for asset in manifest.get("assets", []):
         if not isinstance(asset, dict):
+            continue
+        if str(asset.get("asset_id", "")).strip() not in selected_ids:
             continue
         quality = _quality_status(asset)
         if quality not in {"usable", "reject"}:
@@ -247,6 +261,7 @@ def build_contact_sheet(
     manifest: dict[str, Any],
     decisions: dict[str, Any],
     run_dir: str | Path,
+    vault_root: str | Path,
     columns: int = DEFAULT_COLUMNS,
     rows: int = DEFAULT_ROWS,
 ) -> dict[str, Any]:
@@ -257,10 +272,10 @@ def build_contact_sheet(
     canonical_decisions = normalize_figure_decisions(
         decisions,
         manifest=canonical_manifest,
-        require_final=False,
+        require_final=True,
     )
     paper_id, run_id = require_same_identity(canonical_manifest, canonical_decisions)
-    resolved_run_dir = _validate_run_dir(Path(run_dir), run_id)
+    resolved_run_dir = _validate_run_dir(Path(run_dir), run_id, Path(vault_root))
     output_dir = resolved_run_dir / "figure-review" / "contact-sheets"
     output_dir.mkdir(parents=True, exist_ok=True)
     groups, cells = _group_assets(canonical_manifest, canonical_decisions)
@@ -326,7 +341,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--manifest", required=True)
     command.add_argument("--decisions", required=True)
     command.add_argument("--run-dir", required=True)
-    command.add_argument("--output", default="")
+    command.add_argument("--vault-root", required=True)
     command.add_argument("--columns", type=int, default=DEFAULT_COLUMNS)
     command.add_argument("--rows", type=int, default=DEFAULT_ROWS)
     return command
@@ -338,12 +353,11 @@ def main() -> None:
         manifest=load_json_object(args.manifest),
         decisions=load_json_object(args.decisions),
         run_dir=args.run_dir,
+        vault_root=args.vault_root,
         columns=args.columns,
         rows=args.rows,
     )
-    output = args.output or str(
-        Path(args.run_dir).expanduser().resolve() / "figure-review" / "figure_contact_sheet.json"
-    )
+    output = Path(str(artifact["run_dir"])) / "figure-review" / "figure_contact_sheet.json"
     emit_json(artifact, output)
 
 

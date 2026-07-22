@@ -6,36 +6,119 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  deeppapernote:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            python: "3.10"
-          - os: ubuntu-latest
-            python: "3.12"
-          - os: windows-latest
-            python: "3.11"
-    runs-on: ${{ matrix.os }}
-
-    env:
-      PYTHONUTF8: "1"
-
-    defaults:
-      run:
-        working-directory: .agents/skills/DeepPaperNote
-
+  policy:
+    name: Git file policy
+    runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python }}
+      - name: Reject tracked local and private artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden=()
+          while IFS= read -r -d '' path; do
+            lower=${path,,}
+            case "$lower" in
+              *.pdf|*.epub|*.sqlite|*.sqlite-*|*.db|*.zotero-ft-cache|\
+              *.key|*.pem|*.pfx|*.crt|\
+              .env|.env.*|*/.env|*/.env.*|\
+              .local|.local/*|*/.local|*/.local/*|\
+              文献/zotero已删除|文献/zotero已删除/*|\
+              .obsidian|.obsidian/*|*/.obsidian|*/.obsidian/*|\
+              .trash|.trash/*|*/.trash|*/.trash/*|\
+              storage|storage/*|*/storage|*/storage/*|\
+              deeppapernote_output|deeppapernote_output/*|*/deeppapernote_output|*/deeppapernote_output/*|\
+              tmp|tmp/*|*/tmp|*/tmp/*|\
+              *.tmp|*.temp|*.bak|*.log|*.pyc|*.pyo|*.pyd|\
+              __pycache__|__pycache__/*|*/__pycache__|*/__pycache__/*|\
+              node_modules|node_modules/*|*/node_modules|*/node_modules/*|\
+              .pytest_cache|.pytest_cache/*|*/.pytest_cache|*/.pytest_cache/*|\
+              .mypy_cache|.mypy_cache/*|*/.mypy_cache|*/.mypy_cache/*|\
+              .ruff_cache|.ruff_cache/*|*/.ruff_cache|*/.ruff_cache/*|\
+              .coverage|*/.coverage|htmlcov|htmlcov/*|*/htmlcov|*/htmlcov/*|\
+              .venv|.venv/*|*/.venv|*/.venv/*|venv|venv/*|*/venv|*/venv/*|\
+              *.egg-info|*.egg-info/*|\
+              .agents/skills/*/.agent-work|.agents/skills/*/.agent-work/*|\
+              .agents/skills/*/dist|.agents/skills/*/dist/*|\
+              .agents/skills/*/build|.agents/skills/*/build/*)
+                forbidden+=("$path")
+                ;;
+            esac
+          done < <(git ls-files -z)
+
+          if (( ${#forbidden[@]} )); then
+            echo "Tracked local, private, or generated artifacts are forbidden:"
+            printf ' - %s\n' "${forbidden[@]}"
+            exit 1
+          fi
+
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      deeppapernote_code: ${{ steps.filter.outputs.deeppapernote_code }}
+      deeppapernote_vault_contract: ${{ steps.filter.outputs.deeppapernote_vault_contract }}
+      zotero_code: ${{ steps.filter.outputs.zotero_code }}
+      vault_content: ${{ steps.filter.outputs.vault_content }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Classify changed paths
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            deeppapernote_code:
+              - '.agents/skills/DeepPaperNote/scripts/**'
+              - '.agents/skills/DeepPaperNote/tests/**'
+              - '.agents/skills/DeepPaperNote/pyproject.toml'
+            deeppapernote_vault_contract:
+              - '.agents/skills/DeepPaperNote/scripts/vault.py'
+              - '.agents/skills/DeepPaperNote/scripts/lint_vault.py'
+              - '.agents/skills/DeepPaperNote/scripts/rebuild_paper_navigation.py'
+              - '.agents/skills/DeepPaperNote/scripts/publish_note_v2.py'
+            zotero_code:
+              - '.agents/skills/zotero-pdf-sync/scripts/**'
+              - '.agents/skills/zotero-pdf-sync/tests/**'
+            vault_content:
+              - '文献/论文导航.md'
+              - '文献/论文库.base'
+              - '文献/**/笔记.md'
+              - '文献/**/images/**'
+            ci:
+              - '.github/workflows/deeppapernote-v2.yml'
+
+  deeppapernote-quality:
+    name: DeepPaperNote Ruff
+    needs: [policy, changes]
+    if: >-
+      ${{ needs.changes.outputs.deeppapernote_code == 'true' ||
+          needs.changes.outputs.ci == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        working-directory: .agents/skills/DeepPaperNote
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: .agents/skills/DeepPaperNote/pyproject.toml
 
@@ -45,45 +128,111 @@ jobs:
       - name: Check static quality
         run: python -m ruff check scripts tests
 
+  deeppapernote-tests:
+    name: DeepPaperNote pytest (Windows, Python 3.12)
+    needs: [policy, changes]
+    if: >-
+      ${{ needs.changes.outputs.deeppapernote_code == 'true' ||
+          needs.changes.outputs.ci == 'true' }}
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        working-directory: .agents/skills/DeepPaperNote
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .agents/skills/DeepPaperNote/pyproject.toml
+
+      - name: Install skill and development dependencies
+        run: python -m pip install -e ".[dev]"
+
       - name: Run full test suite
         run: python -m pytest -q tests
+
+  zotero-pdf-sync-quality:
+    name: Zotero PDF Sync Ruff
+    needs: [policy, changes]
+    if: >-
+      ${{ needs.changes.outputs.zotero_code == 'true' ||
+          needs.changes.outputs.ci == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sync-skill lint tool
+        run: python -m pip install ruff
+
+      - name: Check static quality
+        run: python -m ruff check .agents/skills/zotero-pdf-sync/scripts .agents/skills/zotero-pdf-sync/tests
+
+  zotero-pdf-sync-tests:
+    name: Zotero PDF Sync pytest (Windows, Python 3.12)
+    needs: [policy, changes]
+    if: >-
+      ${{ needs.changes.outputs.zotero_code == 'true' ||
+          needs.changes.outputs.ci == 'true' }}
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sync-skill test tool
+        run: python -m pip install pytest
+
+      - name: Run sync-skill tests
+        run: python -m pytest -q .agents/skills/zotero-pdf-sync/tests
+
+  vault:
+    name: Vault navigation and lint
+    needs: [policy, changes]
+    if: >-
+      ${{ needs.changes.outputs.vault_content == 'true' ||
+          needs.changes.outputs.deeppapernote_vault_contract == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        working-directory: .agents/skills/DeepPaperNote
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .agents/skills/DeepPaperNote/pyproject.toml
+
+      - name: Install skill and development dependencies
+        run: python -m pip install -e ".[dev]"
 
       - name: Check deterministic paper navigation
         run: python scripts/rebuild_paper_navigation.py --vault ../../.. --check
 
       - name: Validate tracked Vault
         run: python scripts/lint_vault.py --vault ../../.. --allow-missing-local-pdfs
-
-  zotero-pdf-sync:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            python: "3.10"
-          - os: ubuntu-latest
-            python: "3.12"
-          - os: windows-latest
-            python: "3.11"
-    runs-on: ${{ matrix.os }}
-
-    env:
-      PYTHONUTF8: "1"
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install sync-skill test tools
-        run: python -m pip install pytest ruff
-
-      - name: Check sync-skill static quality
-        run: python -m ruff check .agents/skills/zotero-pdf-sync/scripts .agents/skills/zotero-pdf-sync/tests
-
-      - name: Run sync-skill tests
-        run: python -m pytest -q .agents/skills/zotero-pdf-sync/tests

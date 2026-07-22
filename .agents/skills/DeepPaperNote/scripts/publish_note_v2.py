@@ -46,6 +46,7 @@ from vault import (
     NAVIGATION_PATH,
     NOTE_FILENAME,
     folder_title_matches,
+    is_zotero_deleted_library_path,
     lint_vault,
     paper_local_image_names,
     parse_frontmatter,
@@ -67,8 +68,16 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--readability", required=True)
     command.add_argument("--figure-manifest", required=True)
     command.add_argument("--figure-decisions", required=True)
-    command.add_argument("--figure-contact-sheet", required=True)
-    command.add_argument("--figure-visual-review", required=True)
+    command.add_argument(
+        "--figure-contact-sheet",
+        default="",
+        help="Required only when the staged note embeds a current-run image.",
+    )
+    command.add_argument(
+        "--figure-visual-review",
+        default="",
+        help="Required only when the staged note embeds a current-run image.",
+    )
     command.add_argument("--backup-root", default="")
     command.add_argument("--output", default="")
     return command
@@ -118,12 +127,13 @@ def _vault_pdf_path(value: object) -> PurePosixPath:
         or path.is_absolute()
         or len(path.parts) < 4
         or path.parts[0] != LOCAL_PDF_LIBRARY_ROOT
+        or is_zotero_deleted_library_path(path)
         or any(part in {"", ".", ".."} for part in path.parts)
         or path.suffix.casefold() != ".pdf"
     ):
         raise ContractError(
             "Formal publishing requires each document to be a Vault-relative PDF under "
-            "\u6587\u732e/<collection>/<paper>/"
+            "\u6587\u732e/<collection>/<paper>/ outside Zotero\u5df2\u5220\u9664/"
         )
     return path
 
@@ -222,6 +232,16 @@ def validate_operational_paths(
         raise ContractError("publish report output must not overwrite any publish audit")
 
 
+def validate_staging_path(*, vault: Path, staging_dir: Path, run_id: str) -> None:
+    """Keep all mutable pre-publication content inside its current local run."""
+    safe_run_id = validate_run_id(run_id)
+    expected = (vault / ".local" / "deeppapernote" / "runs" / safe_run_id / "staging").resolve()
+    if staging_dir.resolve() != expected:
+        raise ContractError(
+            "staging_dir must be the current run's .local/deeppapernote/runs/<run_id>/staging/"
+        )
+
+
 def _load_artifacts(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
     return {
         "paper_record": load_json_object(args.paper_record),
@@ -238,13 +258,25 @@ def _load_artifacts(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
 
 def validate_visual_review_for_publish(
     *,
-    visual_review: dict[str, Any],
-    contact_sheet: dict[str, Any],
+    visual_review: dict[str, Any] | None,
+    contact_sheet: dict[str, Any] | None,
     artifacts: dict[str, dict[str, Any]],
 ) -> None:
-    """Bind the visual review to the same manifest, decisions, and run identity."""
+    """Require a visual review only for images that will actually be published."""
     manifest = artifacts["figure_manifest"]
     decisions = artifacts["figure_decisions"]
+    inserted = any(
+        isinstance(item, dict) and item.get("decision") == "inserted"
+        for item in decisions.get("decisions", [])
+    )
+    if not inserted:
+        if visual_review is not None or contact_sheet is not None:
+            raise ContractError(
+                "No embedded image exists, so no figure-review artifacts are allowed"
+            )
+        return
+    if visual_review is None or contact_sheet is None:
+        raise ContractError("Embedded images require a current-run contact sheet and visual review")
     validate_figure_visual_review(
         visual_review,
         manifest=manifest,
@@ -302,6 +334,8 @@ def expected_figure_status(decisions: dict[str, Any]) -> str:
         return "partial"
     if has_placeholder:
         return "placeholder_only"
+    if not has_inserted:
+        return "none_needed"
     return "complete"
 
 
@@ -361,19 +395,19 @@ def validate_synthesis_binding(
 ) -> str:
     """Rebuild and compare every deterministic synthesis field."""
     raw_decisions = context.get("figure_decisions")
-    decisions: dict[str, Any] = {}
+    planned_decisions: dict[str, Any] = {}
     if isinstance(raw_decisions, dict) and raw_decisions:
-        decisions = normalize_figure_decisions(
+        planned_decisions = normalize_figure_decisions(
             raw_decisions,
             manifest=manifest,
             require_final=False,
         )
         require_v2_artifact(
-            decisions,
+            planned_decisions,
             artifact_type="figure_decisions",
-            allow_statuses={"pass", "degraded"},
+            allow_statuses={"pass"},
         )
-        if canonical_json_sha256(decisions) != canonical_json_sha256(raw_decisions):
+        if canonical_json_sha256(planned_decisions) != canonical_json_sha256(raw_decisions):
             raise ContractError(
                 "synthesis_bundle.figure_decisions is not a canonical validated artifact"
             )
@@ -392,7 +426,7 @@ def validate_synthesis_binding(
     elif manifest.get("assets"):
         raise ContractError("synthesis_bundle.pdf_assets is missing current figure assets")
 
-    expected = build_bundle(paper_record, evidence, decisions, assets)
+    expected = build_bundle(paper_record, evidence, planned_decisions, assets)
     for field in sorted(set(expected) | set(context)):
         if canonical_json_sha256(context.get(field)) != canonical_json_sha256(
             expected.get(field)
@@ -519,6 +553,38 @@ def validate_release(
     note_path = staging_dir / NOTE_FILENAME
     image_dir = staging_dir / "images"
     note_text = note_path.read_text(encoding="utf-8")
+    referenced_images, image_reference_failures = paper_local_image_names(note_text)
+    if image_reference_failures:
+        raise ContractError(
+            "Staging image references are invalid: " + "; ".join(image_reference_failures)
+        )
+    manifest_by_filename = {
+        str(asset.get("filename", "")): asset
+        for asset in manifest.get("assets", [])
+        if isinstance(asset, dict) and str(asset.get("filename", "")).strip()
+    }
+    unknown_images = sorted(referenced_images - set(manifest_by_filename))
+    if unknown_images:
+        raise ContractError(
+            "Staging note references images absent from the current run manifest: "
+            + ", ".join(unknown_images)
+        )
+    manifest_by_id = {
+        str(asset.get("asset_id", "")): asset
+        for asset in manifest.get("assets", [])
+        if isinstance(asset, dict) and str(asset.get("asset_id", "")).strip()
+    }
+    selected_images = {
+        str(manifest_by_id[str(entry.get("selected_asset_id", ""))].get("filename", ""))
+        for entry in decisions.get("decisions", [])
+        if isinstance(entry, dict)
+        and entry.get("decision") == "inserted"
+        and str(entry.get("selected_asset_id", "")) in manifest_by_id
+    }
+    if referenced_images != selected_images:
+        raise ContractError(
+            "Staging image embeds do not match the current run's finalized selections"
+        )
     figure_metadata_issues = reader_visible_figure_metadata_issues(note_text)
     if figure_metadata_issues:
         codes = sorted({str(item["code"]) for item in figure_metadata_issues})
@@ -845,8 +911,8 @@ def archive_publish_audit(
     vault: Path,
     target: Path,
     artifacts: dict[str, dict[str, Any]],
-    contact_sheet: dict[str, Any],
-    visual_review: dict[str, Any],
+    contact_sheet: dict[str, Any] | None,
+    visual_review: dict[str, Any] | None,
     release: dict[str, Any],
     report: dict[str, Any],
 ) -> Path:
@@ -860,8 +926,10 @@ def archive_publish_audit(
     try:
         for name, artifact in artifacts.items():
             emit_json(artifact, temporary / f"{name}.json")
-        emit_json(contact_sheet, temporary / "figure_contact_sheet.json")
-        emit_json(visual_review, temporary / "figure_visual_review.json")
+        if contact_sheet is not None:
+            emit_json(contact_sheet, temporary / "figure_contact_sheet.json")
+        if visual_review is not None:
+            emit_json(visual_review, temporary / "figure_visual_review.json")
         emit_json(report, temporary / "publish_report.json")
         image_records = []
         image_dir = target / "images"
@@ -888,8 +956,12 @@ def archive_publish_audit(
                 "note_file_sha256": sha256_file(target / NOTE_FILENAME),
                 "images": image_records,
                 "artifact_files": sorted(path.name for path in temporary.glob("*.json")),
-                "contact_sheet_sha256": canonical_json_sha256(contact_sheet),
-                "visual_review_sha256": canonical_json_sha256(visual_review),
+                "contact_sheet_sha256": (
+                    canonical_json_sha256(contact_sheet) if contact_sheet is not None else ""
+                ),
+                "visual_review_sha256": (
+                    canonical_json_sha256(visual_review) if visual_review is not None else ""
+                ),
                 "navigation_sha256": report["navigation_sha256"],
                 "vault_lint_summary": report["vault_lint_summary"],
             }
@@ -962,15 +1034,21 @@ def main() -> None:
         raise SystemExit(f"Vault does not exist: {vault}")
 
     artifacts = _load_artifacts(args)
-    contact_sheet = load_json_object(args.figure_contact_sheet)
-    visual_review = load_json_object(args.figure_visual_review)
+    run_id = str(artifacts["paper_record"].get("run_id", ""))
+    validate_staging_path(vault=vault, staging_dir=staging_dir, run_id=run_id)
+    release = validate_release(
+        staging_dir=staging_dir,
+        artifacts=artifacts,
+    )
+    contact_sheet = (
+        load_json_object(args.figure_contact_sheet) if args.figure_contact_sheet else None
+    )
+    visual_review = (
+        load_json_object(args.figure_visual_review) if args.figure_visual_review else None
+    )
     validate_visual_review_for_publish(
         visual_review=visual_review,
         contact_sheet=contact_sheet,
-        artifacts=artifacts,
-    )
-    release = validate_release(
-        staging_dir=staging_dir,
         artifacts=artifacts,
     )
     backup_root = (
@@ -1004,8 +1082,12 @@ def main() -> None:
         {
             "publisher": "publish_note_v2",
             "note_sha256": release["note_sha256"],
-            "figure_visual_review_sha256": canonical_json_sha256(visual_review),
-            "figure_contact_sheet_sha256": canonical_json_sha256(contact_sheet),
+            "figure_visual_review_sha256": (
+                canonical_json_sha256(visual_review) if visual_review is not None else ""
+            ),
+            "figure_contact_sheet_sha256": (
+                canonical_json_sha256(contact_sheet) if contact_sheet is not None else ""
+            ),
             "target": str(predicted_target),
             "audit": str(predicted_audit),
             "backup": "",

@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""Plan canonical schema-v2 figures with a manifest-caption bridge.
-
-The planner is placeholder-first. It recommends only visually usable, identity-matched
-assets; semantic review is still required before any decision becomes inserted.
-"""
+"""Plan current-run figure candidates and resolve the images a note actually embeds."""
 
 from __future__ import annotations
 
 import argparse
 import re
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 from common import normalize_whitespace
@@ -23,6 +20,7 @@ from contracts_v2 import (
 from extract_pdf_assets_v2 import _parse_caption_start
 from figure_contracts_v2 import (
     ensure_asset_identity,
+    finalize_note_figure_decisions,
     make_figure_decisions,
     normalize_figure_decisions,
     normalize_figure_label,
@@ -50,8 +48,15 @@ STOPWORDS = {
 
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
-    command.add_argument("--evidence", required=True)
-    command.add_argument("--assets", required=True)
+    command.add_argument("--evidence", default="")
+    command.add_argument("--assets", default="")
+    command.add_argument(
+        "--finalize-note",
+        default="",
+        help="Internal mode: resolve image names embedded in this staged note.",
+    )
+    command.add_argument("--manifest", default="")
+    command.add_argument("--decisions", default="")
     command.add_argument("--output", default="")
     command.add_argument("--max-items", type=int, default=0, help="0 keeps every target.")
     return command
@@ -176,7 +181,6 @@ def build_figure_items(evidence_pack: dict[str, Any], *, limit: int = 12) -> lis
                 "reason": reason,
                 "priority": priority,
                 "anchor_text": section,
-                "insert_mode": "placeholder",
             }
         )
     planned.sort(
@@ -419,14 +423,12 @@ def build_figure_decisions(
                 "target_section": str(item.get("section", "")),
                 "priority": int(item.get("priority", 3) or 3),
                 "reason": str(item.get("reason", "")),
-                "decision": "placeholder",
+                "decision": "omitted",
                 "selected_asset_id": "",
                 "recommended_asset_id": recommended,
                 "candidate_asset_ids": candidate_ids,
                 "rejected_asset_ids": list(item.get("rejected_asset_ids", []) or []),
-                "decision_reason": "awaiting_semantic_confirmation"
-                if recommended
-                else "no_visually_usable_matching_asset",
+                "decision_reason": "not_embedded",
             }
         )
     return make_figure_decisions(
@@ -523,7 +525,6 @@ def build_manifest_caption_bridge_items(
                 "reason": reason,
                 "priority": priority,
                 "anchor_text": section,
-                "insert_mode": "placeholder",
                 "intent_source": BRIDGE_SOURCE,
                 "source_asset_id": str(source.get("asset_id", "")),
             }
@@ -610,15 +611,8 @@ def build_release_figure_plan_artifact(
     )
     _stabilize_bridged_candidates(items)
     raw_decisions = build_figure_decisions(paper_id=paper_id, run_id=run_id, items=items)
-    has_pending = any(
-        item.get("decision_reason") == "awaiting_semantic_confirmation"
-        for item in raw_decisions.get("decisions", [])
-        if isinstance(item, dict)
-    )
-    raw_decisions["status"] = "degraded" if has_pending else "pass"
     decisions = normalize_figure_decisions(raw_decisions, manifest=manifest, require_final=False)
-    status = "degraded" if has_pending else "pass"
-    artifact = artifact_header("figure_plan", paper_id=paper_id, run_id=run_id, status=status)
+    artifact = artifact_header("figure_plan", paper_id=paper_id, run_id=run_id, status="pass")
     artifact.update(
         {
             "planner": "plan_figures_v2.py",
@@ -641,11 +635,34 @@ def build_release_figure_plan_artifact(
 
 def main() -> None:
     args = parser().parse_args()
-    artifact = build_release_figure_plan_artifact(
-        load_json_object(args.evidence),
-        load_json_object(args.assets),
-        max_items=args.max_items,
-    )
+    if args.finalize_note:
+        if not args.manifest or not args.decisions:
+            raise SystemExit("--finalize-note requires --manifest and --decisions")
+        from vault import paper_local_image_names
+
+        try:
+            note_text = Path(args.finalize_note).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SystemExit(f"Cannot read staged note: {exc}") from exc
+        names, failures = paper_local_image_names(note_text)
+        if failures:
+            raise SystemExit("Staged note image references are invalid: " + "; ".join(failures))
+        try:
+            artifact = finalize_note_figure_decisions(
+                manifest=load_json_object(args.manifest),
+                provisional_decisions=load_json_object(args.decisions),
+                embedded_filenames=names,
+            )
+        except Exception as exc:
+            raise SystemExit(str(exc)) from exc
+    else:
+        if not args.evidence or not args.assets:
+            raise SystemExit("Planning requires --evidence and --assets")
+        artifact = build_release_figure_plan_artifact(
+            load_json_object(args.evidence),
+            load_json_object(args.assets),
+            max_items=args.max_items,
+        )
     emit_json(artifact, args.output or None)
     if artifact["status"] == "fail":
         raise SystemExit(2)

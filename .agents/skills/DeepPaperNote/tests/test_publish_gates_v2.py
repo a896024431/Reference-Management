@@ -134,7 +134,6 @@ def test_synthesis_binding_rejects_modified_section_texts() -> None:
         "figure_decisions",
         paper_id=record["paper_id"],
         run_id=record["run_id"],
-        status="degraded",
     )
     decisions["decisions"] = []
     context = build_bundle(record, evidence, decisions, manifest)
