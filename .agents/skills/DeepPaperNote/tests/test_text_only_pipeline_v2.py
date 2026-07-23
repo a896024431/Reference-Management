@@ -220,6 +220,9 @@ def test_pipeline_renders_visual_pages_without_creating_note_images(tmp_path: Pa
     assert result.returncode == 0, result.stderr
     run_dir = vault / ".local" / "deeppapernote" / "runs" / "text-only-run"
     assert (run_dir / "staging").is_dir()
+    assert not (run_dir / "note_plan.json").exists()
+    manifest = load_json_object(run_dir / "run_manifest.json")
+    assert "note_plan" not in manifest["artifacts"]
     assert not (run_dir / "staging" / "images").exists()
     visual_pages = load_json_object(run_dir / "visual_pages.json")
     assert visual_pages["status"] == "pass"

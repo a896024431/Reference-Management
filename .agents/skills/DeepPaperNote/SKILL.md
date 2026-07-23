@@ -29,6 +29,12 @@ description: Generate or explicitly revise an evidence-first Chinese deep-readin
 
 `run_id` 必须是小写、安全且非 Windows 保留名的单个目录名。所有中间结果都在 `.local/deeppapernote/runs/<run_id>/`。
 
+## 代理上下文
+
+- 当前 run 的受验证证据工件和本地 PDF 是唯一证据来源；代理之间只传递当前 run 路径、角色任务和必要的文件哈希，不复制聊天历史、调试输出或完整 Markdown。
+- 作者直接读取当前 run 的 evidence、synthesis 和视觉页；第二读代理使用不继承作者对话历史的独立上下文（`fork_turns: none`），直接读取最终笔记和同一批本地证据。
+- 完整证据保留在 `.local/` 中，不因上下文精简而删减；不要用 `Get-Content -Raw` 或等价方式把完整 JSON、PDF 提取文本或笔记回显到对话中。
+
 ## 强制检查
 
 - 每次读取 PDF 前后核对 SHA-256；解析失败、截断、OCR 覆盖不足或关键证据缺失时停止。

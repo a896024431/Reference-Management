@@ -126,27 +126,6 @@ def run(
         raise RuntimeError(f"{stage} failed ({result.returncode}): {detail}")
 
 
-def write_plan_template(bundle: dict[str, Any], output: Path) -> None:
-    artifact = artifact_header(
-        "note_plan_template",
-        paper_id=str(bundle["paper_id"]),
-        run_id=str(bundle["run_id"]),
-        status="degraded",
-        failures=["pending_model_note_plan"],
-    )
-    artifact["note_plan"] = {
-        "paper_type": bundle.get("paper_type", "generic"),
-        "dominant_domain": "",
-        "must_cover": [],
-        "key_numbers": [],
-        "real_comparisons": [],
-        "section_plan": [],
-        "evidence_ids": [],
-        "key_claims": [],
-    }
-    emit_json(artifact, output)
-
-
 def main() -> None:
     args = parser().parse_args()
     validate_environment(args)
@@ -239,7 +218,6 @@ def main() -> None:
             artifact_path=paths["synthesis_bundle"],
         )
         bundle = load_json_object(paths["synthesis_bundle"])
-        write_plan_template(bundle, paths["note_plan"])
         staging_dir.mkdir(parents=True, exist_ok=False)
         report = artifact_header(
             "run_manifest",
@@ -258,7 +236,9 @@ def main() -> None:
                     "publish_note_v2",
                 ],
                 "artifacts": {
-                    key: str(value) for key, value in paths.items() if key != "run_manifest"
+                    key: str(value)
+                    for key, value in paths.items()
+                    if key != "run_manifest" and value.exists()
                 },
                 "stages": log,
             }
